@@ -17,6 +17,7 @@ from .const import (
     CONF_MAX_EXHAUST_TEMPERATURE,
     CONF_MAX_LEVEL,
     CONF_MIN_LEVEL,
+    CONF_MIN_LEVEL_CHANGE_SECONDS,
     CONF_MIN_OFF_SECONDS,
     CONF_MIN_ON_SECONDS,
     CONF_MIN_VOLTAGE,
@@ -28,6 +29,7 @@ from .const import (
     DEFAULT_LEVEL_MODE_VALUE,
     DEFAULT_MAX_LEVEL,
     DEFAULT_MIN_LEVEL,
+    DEFAULT_MIN_LEVEL_CHANGE_SECONDS,
     DEFAULT_MIN_OFF_SECONDS,
     DEFAULT_MIN_ON_SECONDS,
     DEFAULT_PROPORTIONAL_BAND,
@@ -78,6 +80,9 @@ OPTIONS_SCHEMA = vol.Schema(
         vol.Required(CONF_MIN_OFF_SECONDS, default=DEFAULT_MIN_OFF_SECONDS): vol.All(
             vol.Coerce(int), vol.Range(min=0, max=3600)
         ),
+        vol.Required(
+            CONF_MIN_LEVEL_CHANGE_SECONDS, default=DEFAULT_MIN_LEVEL_CHANGE_SECONDS
+        ): vol.All(vol.Coerce(int), vol.Range(min=0, max=3600)),
         vol.Required(CONF_MIN_VOLTAGE, default=DISABLED_THRESHOLD): vol.All(
             vol.Coerce(float), vol.Range(min=0, max=100)
         ),

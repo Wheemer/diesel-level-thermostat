@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import math
 import time
+from datetime import datetime
 from typing import Any, ClassVar
 
 from homeassistant.components.climate import (
@@ -23,7 +26,10 @@ from homeassistant.const import (
 )
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_call_later,
+    async_track_state_change_event,
+)
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util.unit_conversion import TemperatureConverter
 
@@ -40,6 +46,7 @@ from .const import (
     CONF_MAX_EXHAUST_TEMPERATURE,
     CONF_MAX_LEVEL,
     CONF_MIN_LEVEL,
+    CONF_MIN_LEVEL_CHANGE_SECONDS,
     CONF_MIN_OFF_SECONDS,
     CONF_MIN_ON_SECONDS,
     CONF_MIN_VOLTAGE,
@@ -52,6 +59,7 @@ from .const import (
     DEFAULT_HOT_TOLERANCE,
     DEFAULT_MAX_LEVEL,
     DEFAULT_MIN_LEVEL,
+    DEFAULT_MIN_LEVEL_CHANGE_SECONDS,
     DEFAULT_MIN_OFF_SECONDS,
     DEFAULT_MIN_ON_SECONDS,
     DEFAULT_PROPORTIONAL_BAND,
@@ -102,6 +110,10 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         self._hvac_mode = HVACMode.OFF
         self._target_temperature: float | None = None
         self._last_power_change: float | None = None
+        self._last_level_change: float | None = None
+        self._control_lock = asyncio.Lock()
+        self._control_callback: Any = None
+        self._next_control_at: float | None = None
         self._source_device_id = self.config.get(CONF_SOURCE_DEVICE_ID)
         self._source_telemetry: tuple[str, ...] = ()
 
@@ -132,12 +144,15 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
     @property
     def available(self) -> bool:
         """Only expose control while the source heater is in Level Mode."""
+        power = self.hass.states.get(self.config[CONF_HEATER_POWER])
         mode = self.hass.states.get(self.config[CONF_RUNNING_MODE])
         level = self.hass.states.get(self.config[CONF_HEATER_LEVEL])
         return bool(
-            mode
+            power
+            and mode
             and level
             and self.current_temperature is not None
+            and power.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
             and self._is_level_mode(mode.state)
             and level.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
         )
@@ -202,12 +217,32 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
                 self.hass, watched, self._async_source_changed
             )
         )
+        self.async_on_remove(self._cancel_control_timer)
         await self._async_control()
 
     @callback
     def _async_source_changed(self, event: Event) -> None:
         """Re-evaluate when source telemetry changes."""
+        entity_id = event.data["entity_id"]
+        if entity_id == self.config[CONF_HEATER_POWER]:
+            self._last_power_change = time.monotonic()
+            self._cancel_control_timer()
         self.async_write_ha_state()
+        self.hass.async_create_task(self._async_control())
+
+    @callback
+    def _cancel_control_timer(self) -> None:
+        """Cancel a pending power or output re-evaluation."""
+        if self._control_callback is not None:
+            self._control_callback()
+            self._control_callback = None
+        self._next_control_at = None
+
+    @callback
+    def _async_control_timer(self, _now: datetime) -> None:
+        """Run the deferred control evaluation once its boundary is reached."""
+        self._control_callback = None
+        self._next_control_at = None
         self.hass.async_create_task(self._async_control())
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
@@ -221,7 +256,9 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         """Change virtual heating demand."""
         self._hvac_mode = hvac_mode
         if hvac_mode == HVACMode.OFF:
-            await self._turn_source_off("virtual thermostat turned off")
+            self._cancel_control_timer()
+            async with self._control_lock:
+                await self._turn_source_off("virtual thermostat turned off")
         else:
             await self._async_control()
         self.async_write_ha_state()
@@ -236,51 +273,94 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
 
     async def _async_control(self) -> None:
         """Apply staged output only while this controller owns Level Mode."""
-        if self._hvac_mode != HVACMode.HEAT or not self.available:
-            return
-        temperature = self.current_temperature
-        if temperature is None or self._target_temperature is None:
-            return
-        if self._safety_blocked():
-            await self._turn_source_off("configured safety input is active")
-            return
+        async with self._control_lock:
+            if self._hvac_mode != HVACMode.HEAT or not self.available:
+                return
+            temperature = self.current_temperature
+            if temperature is None or self._target_temperature is None:
+                return
+            if self._safety_blocked():
+                await self._turn_source_off("configured safety input is active")
+                return
 
-        if should_stop(
-            current_temperature=temperature,
-            target_temperature=self._target_temperature,
-            hot_tolerance=self.config.get(CONF_HOT_TOLERANCE, DEFAULT_HOT_TOLERANCE),
-        ):
-            if self._can_turn_off():
-                await self._turn_source_off("target temperature reached")
-            return
-        if not should_start(
-            current_temperature=temperature,
-            target_temperature=self._target_temperature,
-            cold_tolerance=self.config.get(CONF_COLD_TOLERANCE, DEFAULT_COLD_TOLERANCE),
-        ):
-            return
-        if not self._is_source_on() and not self._can_turn_on():
-            return
+            source_on = self._is_source_on()
+            if should_stop(
+                current_temperature=temperature,
+                target_temperature=self._target_temperature,
+                hot_tolerance=self.config.get(
+                    CONF_HOT_TOLERANCE, DEFAULT_HOT_TOLERANCE
+                ),
+            ):
+                if source_on:
+                    remaining = self._remaining_power_transition(
+                        CONF_MIN_ON_SECONDS, DEFAULT_MIN_ON_SECONDS
+                    )
+                    if remaining:
+                        self._schedule_control_after(remaining)
+                    else:
+                        await self._turn_source_off("target temperature reached")
+                return
 
-        level = target_level(
-            current_temperature=temperature,
-            target_temperature=self._target_temperature,
-            min_level=self.config.get(CONF_MIN_LEVEL, DEFAULT_MIN_LEVEL),
-            max_level=self.config.get(CONF_MAX_LEVEL, DEFAULT_MAX_LEVEL),
-            proportional_band=self.config.get(
-                CONF_PROPORTIONAL_BAND, DEFAULT_PROPORTIONAL_BAND
-            ),
-        )
-        await self._set_source_level(level)
-        if not self._is_source_on():
-            await self._call_source("switch", "turn_on", self.config[CONF_HEATER_POWER])
-            self._last_power_change = time.monotonic()
-        self.async_write_ha_state()
+            if not source_on:
+                if not should_start(
+                    current_temperature=temperature,
+                    target_temperature=self._target_temperature,
+                    cold_tolerance=self.config.get(
+                        CONF_COLD_TOLERANCE, DEFAULT_COLD_TOLERANCE
+                    ),
+                ):
+                    return
+                remaining = self._remaining_power_transition(
+                    CONF_MIN_OFF_SECONDS, DEFAULT_MIN_OFF_SECONDS
+                )
+                if remaining:
+                    self._schedule_control_after(remaining)
+                    return
+
+            demand_level = target_level(
+                current_temperature=temperature,
+                target_temperature=self._target_temperature,
+                min_level=self.config.get(CONF_MIN_LEVEL, DEFAULT_MIN_LEVEL),
+                max_level=self.config.get(CONF_MAX_LEVEL, DEFAULT_MAX_LEVEL),
+                proportional_band=self.config.get(
+                    CONF_PROPORTIONAL_BAND, DEFAULT_PROPORTIONAL_BAND
+                ),
+            )
+            current_level = self._source_level()
+            level = demand_level
+            if source_on and current_level is not None and current_level > demand_level:
+                level = current_level - 1
+
+            await self._set_source_level(level, source_on=source_on)
+            if not source_on:
+                await self._call_source(
+                    "switch", "turn_on", self.config[CONF_HEATER_POWER]
+                )
+                self._last_power_change = time.monotonic()
+            if level != demand_level:
+                delay = self.config.get(
+                    CONF_MIN_LEVEL_CHANGE_SECONDS,
+                    DEFAULT_MIN_LEVEL_CHANGE_SECONDS,
+                )
+                if delay:
+                    self._schedule_control_after(delay)
+            self.async_write_ha_state()
 
     def _is_source_on(self) -> bool:
         """Return current source power state."""
         state = self.hass.states.get(self.config[CONF_HEATER_POWER])
         return bool(state and state.state == STATE_ON)
+
+    def _schedule_control_after(self, delay: float) -> None:
+        """Schedule the earliest deferred control re-evaluation."""
+        deadline = time.monotonic() + delay
+        if self._next_control_at is not None and self._next_control_at <= deadline:
+            return
+        self._cancel_control_timer()
+        self._next_control_at = deadline
+        self._control_callback = async_call_later(
+            self.hass, delay, self._async_control_timer
+        )
 
     def _is_level_mode(self, value: str) -> bool:
         """Accept the source integration's current and legacy Level labels."""
@@ -289,38 +369,53 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             *LEVEL_MODE_VALUES,
         }
 
-    def _can_turn_on(self) -> bool:
-        """Respect the configured minimum off time."""
-        return self._power_transition_elapsed(
-            CONF_MIN_OFF_SECONDS, DEFAULT_MIN_OFF_SECONDS
-        )
-
-    def _can_turn_off(self) -> bool:
-        """Respect the configured minimum on time."""
-        return self._power_transition_elapsed(
-            CONF_MIN_ON_SECONDS, DEFAULT_MIN_ON_SECONDS
-        )
-
-    def _power_transition_elapsed(self, key: str, default: int) -> bool:
-        """Return whether the last requested power transition is old enough."""
+    def _remaining_power_transition(self, key: str, default: int) -> float:
+        """Return the remaining time before another power transition is allowed."""
         if self._last_power_change is None:
-            return True
-        return time.monotonic() - self._last_power_change >= self.config.get(
-            key, default
+            return 0
+        return max(
+            0,
+            self.config.get(key, default)
+            - (time.monotonic() - self._last_power_change),
         )
 
-    async def _set_source_level(self, level: int) -> None:
-        """Set a discrete source level via the fan percentage contract."""
+    def _remaining_level_change(self) -> float:
+        """Return the remaining time before another level change is allowed."""
+        if self._last_level_change is None:
+            return 0
+        return max(
+            0,
+            self.config.get(
+                CONF_MIN_LEVEL_CHANGE_SECONDS, DEFAULT_MIN_LEVEL_CHANGE_SECONDS
+            )
+            - (time.monotonic() - self._last_level_change),
+        )
+
+    def _source_level(self) -> int | None:
+        """Return the current source level from its ten-step fan contract."""
         source = self.hass.states.get(self.config[CONF_HEATER_LEVEL])
-        percentage = level * 10
-        if source and source.attributes.get("percentage") == percentage:
+        try:
+            percentage = float(source.attributes["percentage"]) if source else 0
+        except (KeyError, TypeError, ValueError):
+            return None
+        if percentage <= 0:
+            return None
+        return max(1, min(10, math.ceil(percentage / 10)))
+
+    async def _set_source_level(self, level: int, *, source_on: bool) -> None:
+        """Set a discrete source level via the fan percentage contract."""
+        if self._source_level() == level:
+            return
+        if source_on and (remaining := self._remaining_level_change()):
+            self._schedule_control_after(remaining)
             return
         await self._call_source(
             "fan",
             "set_percentage",
             self.config[CONF_HEATER_LEVEL],
-            percentage=percentage,
+            percentage=level * 10,
         )
+        self._last_level_change = time.monotonic()
 
     async def _turn_source_off(self, reason: str) -> None:
         """Request normal heater shutdown through its public power entity."""

@@ -1,4 +1,20 @@
-# Diesel Level Thermostat
+<div align="center">
+
+<h1>
+  Diesel Level Thermostat
+</h1>
+
+### Staged Level-Mode climate control for diesel heaters in Home Assistant
+
+[![HACS Custom](https://img.shields.io/badge/HACS-CUSTOM-FD7E14?style=for-the-badge&logo=home-assistant&logoColor=white&labelColor=555555)](https://github.com/hacs/integration)
+[![Home Assistant Custom Integration](https://img.shields.io/badge/HOME%20ASSISTANT-CUSTOM%20INTEGRATION-41BDF5?style=for-the-badge&logo=home-assistant&logoColor=white&labelColor=555555)](https://www.home-assistant.io/)
+[![Latest release](https://img.shields.io/github/v/release/Wheemer/diesel-level-thermostat?style=for-the-badge&logo=github&logoColor=white&label=RELEASE&labelColor=555555&color=22C55E)](https://github.com/Wheemer/diesel-level-thermostat/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Wheemer/diesel-level-thermostat/total?style=for-the-badge&logo=github&logoColor=white&label=DOWNLOADS&labelColor=555555&color=8A2BE2)](https://github.com/Wheemer/diesel-level-thermostat/releases)
+[![Climate platform](https://img.shields.io/badge/PLATFORM-CLIMATE-22C55E?style=for-the-badge&logo=home-assistant&logoColor=white&labelColor=555555)](https://www.home-assistant.io/integrations/climate/)
+
+[Install](#install) - [What It Uses](#what-it-uses) - [Controller Coverage](#controller-coverage) - [Control Policy](#control-policy) - [Safety](#safety) - [Development](#development)
+
+</div>
 
 Diesel Level Thermostat is a Home Assistant custom integration that adds a
 virtual thermostat on top of a diesel heater already controlled by the
@@ -14,8 +30,7 @@ policy active at a time:
 
 ## What It Uses
 
-The setup flow selects the existing Diesel Heater entities rather than talking
-to BLE itself:
+The setup flow binds to an existing Diesel Heater device rather than talking to BLE itself:
 
 - required: room temperature, power switch, heater-level fan, and running-mode
   entity;
@@ -45,24 +60,41 @@ temperature regulation. It remains visible through the source integration.
 ## Controller Coverage
 
 This thermostat supports every source heater that exposes the public Level-Mode
-contract: a Power switch, Heater Level fan, and Running Mode select on one
-device. That covers the established AA55/AA66, ABBA/HeaterCC, CBFF/Sunster,
-Hcalory MVP, and HeatGenie/Boygu air-heater families. The setup is
-telemetry-aware rather than protocol-hardcoded, so it follows the actual
-entities exposed by each controller.
+contract: a Power switch, a ten-step Heater Level fan, and a Running Mode
+select on one device. The setup is telemetry-aware rather than
+protocol-hardcoded, so it follows the actual entities exposed by each
+controller. That covers the established AA55/AA66, ABBA/HeaterCC,
+CBFF/Sunster, Hcalory MVP, and HeatGenie/Boygu air-heater families when their
+source entities expose that contract.
 
-Webasto Cronus is intentionally not selectable for staged-level control: the
-source integration exposes a different air/water controller model and no
-public Heater Level fan. Water controllers are likewise excluded because a
+Webasto Cronus and DZ06 Neo are intentionally not selectable for staged-level
+control: they do not expose the same ten-step Heater Level contract. Use a
+Diesel Heater release that hides the Heater Level fan for those controllers;
+older source releases can expose a legacy fan entity that is not safe for this
+thermostat to drive. Water controllers are likewise excluded because a
 room-air level loop would be the wrong control model.
 
 ## Control Policy
 
 While heating is requested, the controller maps the temperature error into a
-discrete level between the configured minimum and maximum. It uses a
-proportional band, hysteresis, and minimum on/off periods to avoid needless
-level changes and short cycling. A configured safety input stops output when
-it is unsafe.
+discrete level between the configured minimum and maximum. It selects the
+calculated level immediately when starting or when demand increases, then
+steps a running heater down one level at a time as demand falls. One configured
+room temperature is the feedback input; it is never averaged with case, intake,
+outlet, or exhaust probes because they measure different physical locations.
+
+The controller:
+
+- uses separate start and stop tolerances;
+- schedules re-evaluation at exact minimum-on and minimum-off boundaries;
+- serializes source commands;
+- rate-limits level changes; and
+- stops the source through its normal Power entity when an enabled safety input
+  is active.
+
+The default level-change interval is 60 seconds. Set it to `0` only to disable descent pacing.
+
+The controller never writes the heater's native temperature mode.
 
 The defaults are conservative starting points, not universal combustion
 settings. Tune them for the installed heater and room. This integration is not
@@ -70,13 +102,18 @@ a replacement for the heater's firmware safety systems.
 
 ## Install
 
+[![Open your Home Assistant instance and add this repository to HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Wheemer&repository=diesel-level-thermostat&category=integration)
+
 1. Install the Diesel Heater integration and confirm its Power, Heater Level,
    and Running Mode entities work.
 2. Install this repository as a custom HACS integration and restart Home
    Assistant.
-3. Add **Diesel Level Thermostat** from Settings > Devices & services.
-4. Select the existing heater entities and optional safety sensors.
-5. Put the heater in **Level Mode**, then use the new climate entity.
+3. Add **Diesel Level Thermostat** from Settings > Devices & services and choose
+   the Diesel Heater device.
+4. Choose the room-temperature sensor. The source device's physical telemetry
+   is discovered automatically.
+5. Put the heater in **Level Mode**, then use the new climate entity and adjust
+   the controller options as needed.
 
 Do not run the virtual thermostat while the heater is in its native Temperature
 Mode. The virtual climate entity is intentionally unavailable in that mode.
@@ -87,3 +124,19 @@ Diesel heaters require a controlled cooldown. Use the existing heater Power
 entity rather than cutting mains/DC supply. Verify normal startup, shutdown,
 burn-off, and fault behavior with the heater attended before relying on an
 automation.
+
+## Development
+
+Run the focused controller test suite from the repository root:
+
+```bash
+python -m pytest tests
+```
+
+Run static checks before a release:
+
+```bash
+ruff check .
+ruff format --check .
+python -m compileall custom_components tests
+```

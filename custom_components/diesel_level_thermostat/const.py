@@ -26,6 +26,7 @@ CONF_COLD_TOLERANCE: Final = "cold_tolerance"
 CONF_HOT_TOLERANCE: Final = "hot_tolerance"
 CONF_MIN_ON_SECONDS: Final = "min_on_seconds"
 CONF_MIN_OFF_SECONDS: Final = "min_off_seconds"
+CONF_MIN_LEVEL_CHANGE_SECONDS: Final = "min_level_change_seconds"
 
 DEFAULT_LEVEL_MODE_VALUE: Final = "Level"
 LEVEL_MODE_VALUES: Final = frozenset({"Level", "Level Mode"})
@@ -36,6 +37,7 @@ DEFAULT_COLD_TOLERANCE: Final = 0.5
 DEFAULT_HOT_TOLERANCE: Final = 0.5
 DEFAULT_MIN_ON_SECONDS: Final = 300
 DEFAULT_MIN_OFF_SECONDS: Final = 300
+DEFAULT_MIN_LEVEL_CHANGE_SECONDS: Final = 60
 DISABLED_THRESHOLD: Final = 0.0
 
 OPTIONAL_ENTITY_KEYS: Final = (

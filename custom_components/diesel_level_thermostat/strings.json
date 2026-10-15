@@ -29,7 +29,7 @@
     "step": {
       "init": {
         "title": "Controller tuning",
-        "description": "Set 0 for an optional safety threshold to disable it.",
+        "description": "Set 0 to disable an optional safety threshold or level-change pacing.",
         "data": {
           "min_level": "Minimum heater level",
           "max_level": "Maximum heater level",
@@ -38,6 +38,7 @@
           "hot_tolerance": "Stop tolerance",
           "min_on_seconds": "Minimum on time (seconds)",
           "min_off_seconds": "Minimum off time (seconds)",
+          "min_level_change_seconds": "Minimum level-change interval (seconds)",
           "min_voltage": "Minimum supply voltage",
           "max_case_temperature": "Maximum case temperature",
           "max_exhaust_temperature": "Maximum additional thermal-safety temperature"
