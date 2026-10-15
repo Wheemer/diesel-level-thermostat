@@ -1,4 +1,6 @@
 {
   "name": "Diesel Level Thermostat",
+  "zip_release": true,
+  "filename": "diesel-level-thermostat.zip",
   "render_readme": true
 }
