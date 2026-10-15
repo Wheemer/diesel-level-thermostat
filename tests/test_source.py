@@ -115,6 +115,36 @@ def test_source_control_entities_require_the_level_mode_contract() -> None:
         }
 
 
+def test_source_control_entities_reject_cronus_style_devices_without_a_level_fan() -> (
+    None
+):
+    """Cronus air and water devices do not expose the staged-control contract."""
+    registry = object()
+    entries = (
+        SimpleNamespace(
+            entity_id="switch.diesel_heater_power",
+            domain="switch",
+            unique_id="aa_power",
+        ),
+        SimpleNamespace(
+            entity_id="select.diesel_heater_mode",
+            domain="select",
+            unique_id="aa_cronus_mode",
+        ),
+    )
+    with (
+        patch(
+            "custom_components.diesel_level_thermostat.source.er.async_get",
+            return_value=registry,
+        ),
+        patch(
+            "custom_components.diesel_level_thermostat.source.er.async_entries_for_device",
+            return_value=entries,
+        ),
+    ):
+        assert source_control_entity_ids(object(), "cronus") is None
+
+
 def test_source_telemetry_defaults_follow_available_heater_probes() -> None:
     """Heater telemetry is populated from supported source entities."""
     registry = object()
