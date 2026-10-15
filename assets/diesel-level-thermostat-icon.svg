@@ -10,10 +10,10 @@
   <circle cx="256" cy="244" r="104" fill="#123D46"/>
   <circle cx="256" cy="244" r="76" fill="#194B55"/>
   <path d="M256 174v39" fill="none" stroke="#F3F7F7" stroke-width="16" stroke-linecap="round"/>
-  <rect x="78" y="385" width="56" height="45" rx="8" fill="#123D46"/>
-  <rect x="151" y="356" width="56" height="74" rx="8" fill="#123D46"/>
-  <rect x="224" y="327" width="56" height="103" rx="8" fill="#123D46"/>
-  <rect x="297" y="298" width="56" height="132" rx="8" fill="#4CC9C0"/>
-  <path d="M297 306l28-28 28 28v124h-56Z" fill="#4CC9C0"/>
-  <rect x="370" y="269" width="56" height="161" rx="8" fill="#123D46"/>
+  <rect x="78" y="385" width="56" height="45" rx="8" fill="#123D46" stroke="#F3F7F7" stroke-width="7"/>
+  <rect x="151" y="356" width="56" height="74" rx="8" fill="#123D46" stroke="#F3F7F7" stroke-width="7"/>
+  <rect x="224" y="327" width="56" height="103" rx="8" fill="#123D46" stroke="#F3F7F7" stroke-width="7"/>
+  <rect x="297" y="298" width="56" height="132" rx="8" fill="#4CC9C0" stroke="#F3F7F7" stroke-width="7"/>
+  <path d="M297 306l28-28 28 28v124h-56Z" fill="#4CC9C0" stroke="#F3F7F7" stroke-width="7" stroke-linejoin="round"/>
+  <rect x="370" y="269" width="56" height="161" rx="8" fill="#123D46" stroke="#F3F7F7" stroke-width="7"/>
 </svg>
