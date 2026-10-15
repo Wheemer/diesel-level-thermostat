@@ -18,9 +18,10 @@
 
 </div>
 
-Diesel Level Thermostat is a Home Assistant custom integration that adds a
-virtual thermostat on top of a diesel heater already controlled by the
-`Diesel Heater` integration.
+Diesel Level Thermostat is a companion Home Assistant custom integration for
+[Diesel Heater](https://github.com/Spettacolo83/homeassistant-diesel-heater).
+It adds a virtual thermostat on top of a heater already set up through that
+integration; it does not communicate with the heater over BLE itself.
 
 It deliberately controls the heater only in **Level Mode**. It does not send
 the heater's native temperature-mode command. This keeps exactly one control
@@ -105,8 +106,9 @@ a replacement for the heater's firmware safety systems.
 
 [![Open your Home Assistant instance and add this repository to HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Wheemer&repository=diesel-level-thermostat&category=integration)
 
-1. Install the Diesel Heater integration and confirm its Power, Heater Level,
-   and Running Mode entities work.
+1. Install and configure
+   [Diesel Heater](https://github.com/Spettacolo83/homeassistant-diesel-heater),
+   then confirm its Power, Heater Level, and Running Mode entities work.
 2. Install this repository as a custom HACS integration and restart Home
    Assistant.
 3. Add **Diesel Level Thermostat** from Settings > Devices & services and choose
