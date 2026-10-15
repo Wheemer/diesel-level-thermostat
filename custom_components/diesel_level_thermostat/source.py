@@ -38,11 +38,7 @@ _TELEMETRY_ENTITY_SUFFIXES = {
     CONF_FAULT_SENSOR: (("binary_sensor", "_problem"),),
     CONF_VOLTAGE_SENSOR: (("sensor", "_supply_voltage"),),
     CONF_CASE_TEMPERATURE: (("sensor", "_case_temp"),),
-    # HeatGenie exposes these only when the controller reports the probe.
-    CONF_EXHAUST_TEMPERATURE: (
-        ("sensor", "_outlet_temperature"),
-        ("sensor", "_intake_temperature"),
-    ),
+    CONF_EXHAUST_TEMPERATURE: (("sensor", "_outlet_temperature"),),
 }
 
 

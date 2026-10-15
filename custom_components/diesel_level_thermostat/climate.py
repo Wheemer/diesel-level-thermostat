@@ -218,6 +218,7 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             )
         )
         self.async_on_remove(self._cancel_control_timer)
+        self._initialize_running_source_timing()
         await self._async_control()
 
     @callback
@@ -379,6 +380,14 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             - (time.monotonic() - self._last_power_change),
         )
 
+    def _initialize_running_source_timing(self) -> None:
+        """Conservatively guard an already-running heater after HA starts."""
+        if not self._is_source_on():
+            return
+        now = time.monotonic()
+        self._last_power_change = now
+        self._last_level_change = now
+
     def _remaining_level_change(self) -> float:
         """Return the remaining time before another level change is allowed."""
         if self._last_level_change is None:
@@ -404,9 +413,15 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
 
     async def _set_source_level(self, level: int, *, source_on: bool) -> None:
         """Set a discrete source level via the fan percentage contract."""
-        if self._source_level() == level:
+        current_level = self._source_level()
+        if current_level == level:
             return
-        if source_on and (remaining := self._remaining_level_change()):
+        if (
+            source_on
+            and current_level is not None
+            and level < current_level
+            and (remaining := self._remaining_level_change())
+        ):
             self._schedule_control_after(remaining)
             return
         await self._call_source(

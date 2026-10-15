@@ -37,9 +37,8 @@ The setup flow binds to an existing Diesel Heater device rather than talking to 
 - required: room temperature, power switch, heater-level fan, and running-mode
   entity;
 - optional safety inputs: a fault binary sensor, supply voltage, case
-  temperature, and a second thermal sensor. These can be the exact physical
-  sensors exposed by the selected controller, such as a case, intake, outlet,
-  or exhaust probe.
+  temperature, and an outlet/exhaust temperature sensor when the selected
+  controller exposes one.
 
 The first setup step chooses the **Diesel Heater** device. The integration then
 derives its Power, Heater Level, Running Mode, interior temperature, fault,

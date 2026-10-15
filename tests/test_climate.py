@@ -243,7 +243,11 @@ async def test_running_level_change_is_rate_limited(
 ) -> None:
     """A source level is not changed again before its configured interval."""
     thermostat, services = controller()
+    thermostat.hass.states._states["sensor.room_temperature"] = entity(
+        "19.6", unit_of_measurement="°C"
+    )
     thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
+    thermostat.hass.states._states["fan.heater_level"] = entity(STATE_ON, percentage=50)
     thermostat.config[CONF_MIN_LEVEL_CHANGE_SECONDS] = 60
     thermostat._last_level_change = 100
     scheduled: dict[str, object] = {}
@@ -261,6 +265,41 @@ async def test_running_level_change_is_rate_limited(
 
     services.async_call.assert_not_awaited()
     assert scheduled["delay"] == 59
+
+
+@pytest.mark.asyncio
+async def test_running_heater_increases_output_without_waiting_for_descent_delay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rising demand is immediate; only output reductions are paced."""
+    thermostat, services = controller()
+    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
+    thermostat.config[CONF_MIN_LEVEL_CHANGE_SECONDS] = 60
+    thermostat._last_level_change = 100
+    monkeypatch.setattr(climate_module.time, "monotonic", lambda: 101)
+
+    await thermostat._async_control()
+
+    services.async_call.assert_awaited_once_with(
+        "fan",
+        "set_percentage",
+        {"entity_id": "fan.heater_level", "percentage": 50},
+        blocking=True,
+    )
+
+
+def test_existing_source_is_guarded_after_controller_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Restarting HA never assumes a running heater has met its timing guard."""
+    thermostat, _ = controller()
+    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
+    monkeypatch.setattr(climate_module.time, "monotonic", lambda: 100)
+
+    thermostat._initialize_running_source_timing()
+
+    assert thermostat._last_power_change == 100
+    assert thermostat._last_level_change == 100
 
 
 def test_external_source_power_change_resets_transition_timing(
