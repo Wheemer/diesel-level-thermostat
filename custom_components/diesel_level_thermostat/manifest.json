@@ -1,0 +1,7 @@
+{
+  "domain": "diesel_level_thermostat",
+  "name": "Diesel Level Thermostat",
+  "config_flow": true,
+  "iot_class": "Local Push",
+  "version": "0.1.0"
+}

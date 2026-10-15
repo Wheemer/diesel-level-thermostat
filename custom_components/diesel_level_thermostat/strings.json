@@ -1,0 +1,51 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Diesel Level Thermostat",
+        "description": "Choose the Diesel Heater device this thermostat will control.",
+        "data": {
+          "source_device_id": "Diesel Heater"
+        }
+      },
+      "telemetry": {
+        "title": "Temperature and safety",
+        "description": "The heater's physical safety telemetry is detected automatically. Choose the temperature used for room control.",
+        "data": {
+          "name": "Name",
+          "room_temperature": "Room temperature"
+        }
+      }
+    },
+    "error": {
+      "already_configured": "This heater is already configured.",
+      "unsupported_source_device": "This device does not expose the required Power, Heater Level, and Running Mode entities."
+    },
+    "abort": {
+      "already_configured": "This heater is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Controller tuning",
+        "description": "Set 0 for an optional safety threshold to disable it.",
+        "data": {
+          "min_level": "Minimum heater level",
+          "max_level": "Maximum heater level",
+          "proportional_band": "Temperature error at maximum level",
+          "cold_tolerance": "Start tolerance",
+          "hot_tolerance": "Stop tolerance",
+          "min_on_seconds": "Minimum on time (seconds)",
+          "min_off_seconds": "Minimum off time (seconds)",
+          "min_voltage": "Minimum supply voltage",
+          "max_case_temperature": "Maximum case temperature",
+          "max_exhaust_temperature": "Maximum additional thermal-safety temperature"
+        }
+      }
+    },
+    "error": {
+      "invalid_level_range": "Minimum level must not exceed maximum level."
+    }
+  }
+}
