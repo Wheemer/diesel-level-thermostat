@@ -55,6 +55,7 @@ from .const import (
     DEFAULT_MIN_OFF_SECONDS,
     DEFAULT_MIN_ON_SECONDS,
     DEFAULT_PROPORTIONAL_BAND,
+    LEVEL_MODE_VALUES,
     OPTIONAL_ENTITY_KEYS,
 )
 from .control import should_start, should_stop, target_level
@@ -137,7 +138,7 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             mode
             and level
             and self.current_temperature is not None
-            and mode.state == self.config[CONF_LEVEL_MODE_VALUE]
+            and self._is_level_mode(mode.state)
             and level.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
         )
 
@@ -280,6 +281,13 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         """Return current source power state."""
         state = self.hass.states.get(self.config[CONF_HEATER_POWER])
         return bool(state and state.state == STATE_ON)
+
+    def _is_level_mode(self, value: str) -> bool:
+        """Accept the source integration's current and legacy Level labels."""
+        return value in {
+            self.config.get(CONF_LEVEL_MODE_VALUE),
+            *LEVEL_MODE_VALUES,
+        }
 
     def _can_turn_on(self) -> bool:
         """Respect the configured minimum off time."""

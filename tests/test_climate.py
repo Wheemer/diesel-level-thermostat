@@ -90,6 +90,13 @@ def test_requires_a_live_room_temperature() -> None:
     assert not thermostat.available
 
 
+def test_accepts_current_and_legacy_level_mode_labels() -> None:
+    """Source integration releases use both Level and Level Mode labels."""
+    thermostat, _ = controller(mode="Level")
+
+    assert thermostat.available
+
+
 @pytest.mark.asyncio
 async def test_controls_level_and_power_only_in_level_mode() -> None:
     """A cold room requests staged output through public entity services."""

@@ -27,7 +27,8 @@ CONF_HOT_TOLERANCE: Final = "hot_tolerance"
 CONF_MIN_ON_SECONDS: Final = "min_on_seconds"
 CONF_MIN_OFF_SECONDS: Final = "min_off_seconds"
 
-DEFAULT_LEVEL_MODE_VALUE: Final = "Level Mode"
+DEFAULT_LEVEL_MODE_VALUE: Final = "Level"
+LEVEL_MODE_VALUES: Final = frozenset({"Level", "Level Mode"})
 DEFAULT_MIN_LEVEL: Final = 1
 DEFAULT_MAX_LEVEL: Final = 10
 DEFAULT_PROPORTIONAL_BAND: Final = 5.0
