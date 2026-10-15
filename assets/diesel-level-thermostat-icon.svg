@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">Diesel Level Thermostat</title>
+  <desc id="description">A diesel air heater with a flame and thermostat dial.</desc>
+  <rect width="512" height="512" rx="104" fill="#123D46"/>
+  <rect x="72" y="150" width="368" height="238" rx="48" fill="#F3F7F7"/>
+  <rect x="72" y="150" width="368" height="62" rx="48" fill="#D6E4E5"/>
+  <path d="M130 303c0-31 23-58 53-63-13 20-9 40 7 54 11 10 18 25 18 42 0 31-25 56-56 56s-56-25-56-56c0-20 11-38 34-53Z" fill="#FF8A3D"/>
+  <path d="M151 354c-11-15-7-34 10-45-1 14 4 25 14 34 7 6 10 14 10 23 0 18-15 33-33 33-12 0-23-7-29-18 17 1 31-8 28-27Z" fill="#FFD166"/>
+  <circle cx="334" cy="294" r="75" fill="#123D46"/>
+  <circle cx="334" cy="294" r="53" fill="#4CC9C0"/>
+  <circle cx="334" cy="294" r="38" fill="#F3F7F7"/>
+  <path d="M334 294V259" stroke="#123D46" stroke-width="14" stroke-linecap="round"/>
+  <path d="M306 332h56" stroke="#123D46" stroke-width="12" stroke-linecap="round"/>
+  <path d="M238 406h136" stroke="#4CC9C0" stroke-width="22" stroke-linecap="round"/>
+  <circle cx="96" cy="426" r="14" fill="#FF8A3D"/>
+  <circle cx="416" cy="426" r="14" fill="#FF8A3D"/>
+</svg>
