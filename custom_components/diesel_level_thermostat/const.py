@@ -7,6 +7,7 @@ from typing import Final
 DOMAIN: Final = "diesel_level_thermostat"
 
 CONF_ROOM_TEMPERATURE: Final = "room_temperature"
+CONF_ROOM_TEMPERATURE_OFFSET: Final = "room_temperature_offset"
 CONF_SOURCE_DEVICE_ID: Final = "source_device_id"
 CONF_HEATER_POWER: Final = "heater_power"
 CONF_HEATER_LEVEL: Final = "heater_level"
@@ -29,6 +30,7 @@ CONF_MIN_OFF_SECONDS: Final = "min_off_seconds"
 CONF_MIN_LEVEL_CHANGE_SECONDS: Final = "min_level_change_seconds"
 
 DEFAULT_LEVEL_MODE_VALUE: Final = "Level"
+DEFAULT_ROOM_TEMPERATURE_OFFSET: Final = 0.0
 LEVEL_MODE_VALUES: Final = frozenset({"Level", "Level Mode"})
 DEFAULT_MIN_LEVEL: Final = 1
 DEFAULT_MAX_LEVEL: Final = 10

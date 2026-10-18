@@ -23,6 +23,7 @@ from .const import (
     CONF_MIN_VOLTAGE,
     CONF_PROPORTIONAL_BAND,
     CONF_ROOM_TEMPERATURE,
+    CONF_ROOM_TEMPERATURE_OFFSET,
     CONF_SOURCE_DEVICE_ID,
     DEFAULT_COLD_TOLERANCE,
     DEFAULT_HOT_TOLERANCE,
@@ -33,6 +34,7 @@ from .const import (
     DEFAULT_MIN_OFF_SECONDS,
     DEFAULT_MIN_ON_SECONDS,
     DEFAULT_PROPORTIONAL_BAND,
+    DEFAULT_ROOM_TEMPERATURE_OFFSET,
     DISABLED_THRESHOLD,
     DOMAIN,
 )
@@ -57,43 +59,53 @@ USER_SCHEMA = vol.Schema(
     }
 )
 
-OPTIONS_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_MIN_LEVEL, default=DEFAULT_MIN_LEVEL): vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=10)
-        ),
-        vol.Required(CONF_MAX_LEVEL, default=DEFAULT_MAX_LEVEL): vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=10)
-        ),
-        vol.Required(
-            CONF_PROPORTIONAL_BAND, default=DEFAULT_PROPORTIONAL_BAND
-        ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=30)),
-        vol.Required(CONF_COLD_TOLERANCE, default=DEFAULT_COLD_TOLERANCE): vol.All(
-            vol.Coerce(float), vol.Range(min=0, max=10)
-        ),
-        vol.Required(CONF_HOT_TOLERANCE, default=DEFAULT_HOT_TOLERANCE): vol.All(
-            vol.Coerce(float), vol.Range(min=0, max=10)
-        ),
-        vol.Required(CONF_MIN_ON_SECONDS, default=DEFAULT_MIN_ON_SECONDS): vol.All(
-            vol.Coerce(int), vol.Range(min=0, max=3600)
-        ),
-        vol.Required(CONF_MIN_OFF_SECONDS, default=DEFAULT_MIN_OFF_SECONDS): vol.All(
-            vol.Coerce(int), vol.Range(min=0, max=3600)
-        ),
-        vol.Required(
-            CONF_MIN_LEVEL_CHANGE_SECONDS, default=DEFAULT_MIN_LEVEL_CHANGE_SECONDS
-        ): vol.All(vol.Coerce(int), vol.Range(min=0, max=3600)),
-        vol.Required(CONF_MIN_VOLTAGE, default=DISABLED_THRESHOLD): vol.All(
-            vol.Coerce(float), vol.Range(min=0, max=100)
-        ),
-        vol.Required(CONF_MAX_CASE_TEMPERATURE, default=DISABLED_THRESHOLD): vol.All(
-            vol.Coerce(float), vol.Range(min=0, max=500)
-        ),
-        vol.Required(CONF_MAX_EXHAUST_TEMPERATURE, default=DISABLED_THRESHOLD): vol.All(
-            vol.Coerce(float), vol.Range(min=0, max=1000)
-        ),
-    }
-)
+
+def options_schema(room_temperature: str | None) -> vol.Schema:
+    """Build the editable room-feedback and controller-tuning schema."""
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_ROOM_TEMPERATURE, default=room_temperature
+            ): _entity_selector("sensor", "temperature"),
+            vol.Required(
+                CONF_ROOM_TEMPERATURE_OFFSET,
+                default=DEFAULT_ROOM_TEMPERATURE_OFFSET,
+            ): vol.All(vol.Coerce(float), vol.Range(min=-20, max=20)),
+            vol.Required(CONF_MIN_LEVEL, default=DEFAULT_MIN_LEVEL): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=10)
+            ),
+            vol.Required(CONF_MAX_LEVEL, default=DEFAULT_MAX_LEVEL): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=10)
+            ),
+            vol.Required(
+                CONF_PROPORTIONAL_BAND, default=DEFAULT_PROPORTIONAL_BAND
+            ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=30)),
+            vol.Required(CONF_COLD_TOLERANCE, default=DEFAULT_COLD_TOLERANCE): vol.All(
+                vol.Coerce(float), vol.Range(min=0, max=10)
+            ),
+            vol.Required(CONF_HOT_TOLERANCE, default=DEFAULT_HOT_TOLERANCE): vol.All(
+                vol.Coerce(float), vol.Range(min=0, max=10)
+            ),
+            vol.Required(CONF_MIN_ON_SECONDS, default=DEFAULT_MIN_ON_SECONDS): vol.All(
+                vol.Coerce(int), vol.Range(min=0, max=3600)
+            ),
+            vol.Required(
+                CONF_MIN_OFF_SECONDS, default=DEFAULT_MIN_OFF_SECONDS
+            ): vol.All(vol.Coerce(int), vol.Range(min=0, max=3600)),
+            vol.Required(
+                CONF_MIN_LEVEL_CHANGE_SECONDS, default=DEFAULT_MIN_LEVEL_CHANGE_SECONDS
+            ): vol.All(vol.Coerce(int), vol.Range(min=0, max=3600)),
+            vol.Required(CONF_MIN_VOLTAGE, default=DISABLED_THRESHOLD): vol.All(
+                vol.Coerce(float), vol.Range(min=0, max=100)
+            ),
+            vol.Required(
+                CONF_MAX_CASE_TEMPERATURE, default=DISABLED_THRESHOLD
+            ): vol.All(vol.Coerce(float), vol.Range(min=0, max=500)),
+            vol.Required(
+                CONF_MAX_EXHAUST_TEMPERATURE, default=DISABLED_THRESHOLD
+            ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
+        }
+    )
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -149,6 +161,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(
                     CONF_ROOM_TEMPERATURE, default=room_temperature
                 ): room_selector,
+                vol.Required(
+                    CONF_ROOM_TEMPERATURE_OFFSET,
+                    default=DEFAULT_ROOM_TEMPERATURE_OFFSET,
+                ): vol.All(vol.Coerce(float), vol.Range(min=-20, max=20)),
             }
         )
 
@@ -171,13 +187,22 @@ class DieselLevelThermostatOptionsFlow(config_entries.OptionsFlow):
             if user_input[CONF_MIN_LEVEL] > user_input[CONF_MAX_LEVEL]:
                 return self.async_show_form(
                     step_id="init",
-                    data_schema=OPTIONS_SCHEMA,
+                    data_schema=self._options_schema(),
                     errors={"base": "invalid_level_range"},
                 )
             return self.async_create_entry(title="", data=user_input)
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(
-                OPTIONS_SCHEMA, self.config_entry.options
+                self._options_schema(), self.config_entry.options
             ),
+        )
+
+    def _options_schema(self) -> vol.Schema:
+        """Use the configured room sensor as the editable default."""
+        return options_schema(
+            self.config_entry.options.get(
+                CONF_ROOM_TEMPERATURE,
+                self.config_entry.data.get(CONF_ROOM_TEMPERATURE),
+            )
         )

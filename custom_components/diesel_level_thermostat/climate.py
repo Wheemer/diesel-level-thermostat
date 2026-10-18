@@ -52,6 +52,7 @@ from .const import (
     CONF_MIN_VOLTAGE,
     CONF_PROPORTIONAL_BAND,
     CONF_ROOM_TEMPERATURE,
+    CONF_ROOM_TEMPERATURE_OFFSET,
     CONF_RUNNING_MODE,
     CONF_SOURCE_DEVICE_ID,
     CONF_VOLTAGE_SENSOR,
@@ -63,6 +64,7 @@ from .const import (
     DEFAULT_MIN_OFF_SECONDS,
     DEFAULT_MIN_ON_SECONDS,
     DEFAULT_PROPORTIONAL_BAND,
+    DEFAULT_ROOM_TEMPERATURE_OFFSET,
     LEVEL_MODE_VALUES,
     OPTIONAL_ENTITY_KEYS,
 )
@@ -138,8 +140,25 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
 
     @property
     def current_temperature(self) -> float | None:
-        """Return the selected room temperature."""
-        return self._temperature_from_entity(self.config[CONF_ROOM_TEMPERATURE])
+        """Return the selected room temperature with its local correction."""
+        temperature = self._temperature_from_entity(self.config[CONF_ROOM_TEMPERATURE])
+        if temperature is None:
+            return None
+        offset_c = self.config.get(
+            CONF_ROOM_TEMPERATURE_OFFSET, DEFAULT_ROOM_TEMPERATURE_OFFSET
+        )
+        return temperature + (
+            TemperatureConverter.convert(
+                offset_c,
+                UnitOfTemperature.CELSIUS,
+                self._attr_temperature_unit,
+            )
+            - TemperatureConverter.convert(
+                0,
+                UnitOfTemperature.CELSIUS,
+                self._attr_temperature_unit,
+            )
+        )
 
     @property
     def available(self) -> bool:
@@ -165,6 +184,9 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             "source_level": self.config[CONF_HEATER_LEVEL],
             "source_mode": self.config[CONF_RUNNING_MODE],
             "control_active": self.available and self._hvac_mode == HVACMode.HEAT,
+            "room_temperature_offset_c": self.config.get(
+                CONF_ROOM_TEMPERATURE_OFFSET, DEFAULT_ROOM_TEMPERATURE_OFFSET
+            ),
         }
         telemetry = {
             entity_id: value

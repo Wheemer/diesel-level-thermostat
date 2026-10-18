@@ -20,6 +20,7 @@ from custom_components.diesel_level_thermostat.const import (
     CONF_LEVEL_MODE_VALUE,
     CONF_MIN_LEVEL_CHANGE_SECONDS,
     CONF_ROOM_TEMPERATURE,
+    CONF_ROOM_TEMPERATURE_OFFSET,
     CONF_RUNNING_MODE,
 )
 
@@ -92,6 +93,24 @@ def test_converts_source_temperature_to_home_assistant_unit() -> None:
     thermostat.hass.config.units.temperature_unit = UnitOfTemperature.FAHRENHEIT
 
     assert thermostat.current_temperature == 64.4
+
+
+def test_applies_room_temperature_offset_in_celsius() -> None:
+    """The configured correction applies after source-unit conversion."""
+    thermostat, _ = controller()
+    thermostat.config[CONF_ROOM_TEMPERATURE_OFFSET] = -5
+
+    assert thermostat.current_temperature == 13
+
+
+def test_converts_room_temperature_offset_for_fahrenheit() -> None:
+    """A Celsius correction remains a Celsius correction in Fahrenheit HA."""
+    thermostat, _ = controller()
+    thermostat.hass.config.units.temperature_unit = UnitOfTemperature.FAHRENHEIT
+    thermostat._attr_temperature_unit = UnitOfTemperature.FAHRENHEIT
+    thermostat.config[CONF_ROOM_TEMPERATURE_OFFSET] = -5
+
+    assert thermostat.current_temperature == pytest.approx(55.4)
 
 
 def test_requires_a_live_room_temperature() -> None:

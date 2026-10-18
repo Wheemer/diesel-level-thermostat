@@ -13,7 +13,8 @@
         "description": "The heater's physical safety telemetry is detected automatically. Choose the temperature used for room control.",
         "data": {
           "name": "Name",
-          "room_temperature": "Room temperature"
+          "room_temperature": "Room temperature",
+          "room_temperature_offset": "Room temperature offset (C)"
         }
       }
     },
@@ -31,6 +32,8 @@
         "title": "Controller tuning",
         "description": "Set 0 to disable an optional safety threshold or level-change pacing.",
         "data": {
+          "room_temperature": "Room temperature",
+          "room_temperature_offset": "Room temperature offset (C)",
           "min_level": "Minimum heater level",
           "max_level": "Maximum heater level",
           "proportional_band": "Temperature error at maximum level",
