@@ -1,8 +1,7 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/Wheemer/diesel-level-thermostat/main/assets/diesel-level-thermostat-icon.svg" width="104" alt="Diesel Level Thermostat icon">
-
 <h1>
+  <img src="https://raw.githubusercontent.com/Wheemer/diesel-level-thermostat/main/assets/diesel-level-thermostat-icon.svg" width="56" alt="Diesel Level Thermostat icon" align="center">
   Diesel Level Thermostat
 </h1>
 
@@ -14,7 +13,7 @@
 [![Downloads](https://img.shields.io/github/downloads/Wheemer/diesel-level-thermostat/total?style=for-the-badge&logo=github&logoColor=white&label=DOWNLOADS&labelColor=555555&color=8A2BE2)](https://github.com/Wheemer/diesel-level-thermostat/releases)
 [![Climate platform](https://img.shields.io/badge/PLATFORM-CLIMATE-22C55E?style=for-the-badge&logo=home-assistant&logoColor=white&labelColor=555555)](https://www.home-assistant.io/integrations/climate/)
 
-[Install](#install) - [What It Uses](#what-it-uses) - [Controller Coverage](#controller-coverage) - [Control Policy](#control-policy) - [Safety](#safety) - [Development](#development)
+[Install](#install) • [What It Does](#what-it-does) • [Controller Coverage](#controller-coverage) • [Control Policy](#control-policy) • [Safety](#safety) • [Development](#development)
 
 </div>
 
@@ -23,13 +22,19 @@ Diesel Level Thermostat is a companion Home Assistant custom integration for
 It adds a virtual thermostat on top of a heater already set up through that
 integration; it does not communicate with the heater over BLE itself.
 
-It deliberately controls the heater only in **Level Mode**. It does not send
-the heater's native temperature-mode command. This keeps exactly one control
-policy active at a time:
+> [!IMPORTANT]
+> This integration owns temperature control only while the heater is in
+> **Level Mode**. It never sends the heater’s native Temperature Mode command.
 
-- **Level Mode:** this integration calculates and sends Levels 1 through 10.
-- **Temperature Mode:** the heater's native controller remains in charge and
-  this virtual thermostat becomes unavailable.
+## What It Does
+
+| Capability | Behavior |
+|---|---|
+| **Level-mode climate control** | Calculates a ten-step heating level from the selected room-temperature feedback. |
+| **Corrected feedback** | Uses any Home Assistant temperature sensor and an optional local Celsius offset. |
+| **Stable control** | Starts at the calculated demand, then steps down gradually as the room approaches target. |
+| **Safety gates** | Stops only through the heater’s normal Power entity and honors configured fault, voltage, and thermal limits. |
+| **No protocol assumptions** | Binds to Diesel Heater’s public entities, not a hard-coded brand or Bluetooth protocol. |
 
 ## What It Uses
 
@@ -45,7 +50,8 @@ The first setup step chooses the **Diesel Heater** device. The integration then
 derives its Power, Heater Level, Running Mode, interior temperature, fault,
 supply voltage, case temperature, and any supported intake/outlet probe from
 that device. The room-temperature field defaults to the heater's interior
-sensor but can be changed to an external room sensor. Controls from different
+sensor but can be changed to an external room sensor. The same selector and a
+local Celsius offset remain editable from Options. Controls from different
 heaters cannot be mixed. Physical telemetry is published in the climate
 attributes; integration-local fuel and runtime estimates are excluded because
 they are not hardware measurements and never affect control.
