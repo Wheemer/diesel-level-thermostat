@@ -1,7 +1,7 @@
 <div align="center">
 
 <h1>
-  <img src="https://raw.githubusercontent.com/Wheemer/diesel-level-thermostat/main/assets/diesel-level-thermostat-icon.svg" width="56" alt="Diesel Level Thermostat icon" align="center">
+  <img src="https://raw.githubusercontent.com/Wheemer/diesel-level-thermostat/main/assets/diesel-level-thermostat-icon.png" width="56" alt="Diesel Level Thermostat icon" align="center">
   Diesel Level Thermostat
 </h1>
 
