@@ -3,5 +3,5 @@
   "name": "Diesel Level Thermostat",
   "config_flow": true,
   "iot_class": "Local Push",
-  "version": "0.2.3"
+  "version": "0.2.4"
 }
