@@ -29,11 +29,21 @@
   "options": {
     "step": {
       "init": {
-        "title": "Controller tuning",
-        "description": "Set 0 to disable an optional safety threshold or level-change pacing.",
+        "title": "Room feedback",
+        "description": "Choose the temperature sensor that controls this thermostat. The heater's interior temperature is selected by default.",
         "data": {
           "room_temperature": "Room temperature",
-          "room_temperature_offset": "Room temperature offset (C)",
+          "room_temperature_offset": "Room temperature offset (C)"
+        },
+        "data_description": {
+          "room_temperature": "The temperature used to decide when to start, stop, and adjust the heater level.",
+          "room_temperature_offset": "A local correction in Celsius applied only by this thermostat. Use a negative value when the selected sensor reads too high."
+        }
+      },
+      "advanced": {
+        "title": "Advanced controller tuning",
+        "description": "These values control level selection and optional safety stops. Set a safety threshold to 0 to disable it.",
+        "data": {
           "min_level": "Minimum heater level",
           "max_level": "Maximum heater level",
           "proportional_band": "Temperature error at maximum level",
@@ -45,6 +55,19 @@
           "min_voltage": "Minimum supply voltage",
           "max_case_temperature": "Maximum case temperature",
           "max_exhaust_temperature": "Maximum additional thermal-safety temperature"
+        },
+        "data_description": {
+          "min_level": "The lowest level used while the thermostat is heating.",
+          "max_level": "The highest level the thermostat may request.",
+          "proportional_band": "Temperature difference at which the thermostat requests its maximum level.",
+          "cold_tolerance": "Temperature below the target required before starting a stopped heater.",
+          "hot_tolerance": "Temperature above the target required before stopping a running heater.",
+          "min_on_seconds": "Minimum run time after starting before the thermostat may stop the heater.",
+          "min_off_seconds": "Minimum off time after stopping before the thermostat may start the heater again.",
+          "min_level_change_seconds": "Minimum time between requested heater-level changes.",
+          "min_voltage": "Stop the heater below this supply voltage. Set to 0 to disable.",
+          "max_case_temperature": "Stop the heater at or above this case temperature. Set to 0 to disable.",
+          "max_exhaust_temperature": "Stop the heater at or above this additional thermal-safety temperature. Set to 0 to disable."
         }
       }
     },

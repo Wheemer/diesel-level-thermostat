@@ -51,6 +51,20 @@ def _entity_selector(
     return selector.EntitySelector(selector.EntitySelectorConfig(filter=filter_data))
 
 
+def _number_selector(
+    minimum: float, maximum: float, step: float = 1
+) -> selector.NumberSelector:
+    """Build a boxed numeric selector with an explicit step."""
+    return selector.NumberSelector(
+        selector.NumberSelectorConfig(
+            min=minimum,
+            max=maximum,
+            step=step,
+            mode=selector.NumberSelectorMode.BOX,
+        )
+    )
+
+
 USER_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_SOURCE_DEVICE_ID): selector.DeviceSelector(
@@ -61,7 +75,7 @@ USER_SCHEMA = vol.Schema(
 
 
 def options_schema(room_temperature: str | None) -> vol.Schema:
-    """Build the editable room-feedback and controller-tuning schema."""
+    """Build the primary room-feedback options schema."""
     return vol.Schema(
         {
             vol.Required(
@@ -70,40 +84,49 @@ def options_schema(room_temperature: str | None) -> vol.Schema:
             vol.Required(
                 CONF_ROOM_TEMPERATURE_OFFSET,
                 default=DEFAULT_ROOM_TEMPERATURE_OFFSET,
-            ): vol.All(vol.Coerce(float), vol.Range(min=-20, max=20)),
-            vol.Required(CONF_MIN_LEVEL, default=DEFAULT_MIN_LEVEL): vol.All(
-                vol.Coerce(int), vol.Range(min=1, max=10)
+            ): _number_selector(-20, 20, 0.1),
+        }
+    )
+
+
+def advanced_options_schema() -> vol.Schema:
+    """Build advanced controller tuning and safety options."""
+    return vol.Schema(
+        {
+            vol.Required(CONF_MIN_LEVEL, default=DEFAULT_MIN_LEVEL): _number_selector(
+                1, 10
             ),
-            vol.Required(CONF_MAX_LEVEL, default=DEFAULT_MAX_LEVEL): vol.All(
-                vol.Coerce(int), vol.Range(min=1, max=10)
+            vol.Required(CONF_MAX_LEVEL, default=DEFAULT_MAX_LEVEL): _number_selector(
+                1, 10
             ),
             vol.Required(
                 CONF_PROPORTIONAL_BAND, default=DEFAULT_PROPORTIONAL_BAND
-            ): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=30)),
-            vol.Required(CONF_COLD_TOLERANCE, default=DEFAULT_COLD_TOLERANCE): vol.All(
-                vol.Coerce(float), vol.Range(min=0, max=10)
-            ),
-            vol.Required(CONF_HOT_TOLERANCE, default=DEFAULT_HOT_TOLERANCE): vol.All(
-                vol.Coerce(float), vol.Range(min=0, max=10)
-            ),
-            vol.Required(CONF_MIN_ON_SECONDS, default=DEFAULT_MIN_ON_SECONDS): vol.All(
-                vol.Coerce(int), vol.Range(min=0, max=3600)
-            ),
+            ): _number_selector(0.1, 30, 0.1),
+            vol.Required(
+                CONF_COLD_TOLERANCE, default=DEFAULT_COLD_TOLERANCE
+            ): _number_selector(0, 10, 0.1),
+            vol.Required(
+                CONF_HOT_TOLERANCE, default=DEFAULT_HOT_TOLERANCE
+            ): _number_selector(0, 10, 0.1),
+            vol.Required(
+                CONF_MIN_ON_SECONDS, default=DEFAULT_MIN_ON_SECONDS
+            ): _number_selector(0, 3600),
             vol.Required(
                 CONF_MIN_OFF_SECONDS, default=DEFAULT_MIN_OFF_SECONDS
-            ): vol.All(vol.Coerce(int), vol.Range(min=0, max=3600)),
+            ): _number_selector(0, 3600),
             vol.Required(
-                CONF_MIN_LEVEL_CHANGE_SECONDS, default=DEFAULT_MIN_LEVEL_CHANGE_SECONDS
-            ): vol.All(vol.Coerce(int), vol.Range(min=0, max=3600)),
-            vol.Required(CONF_MIN_VOLTAGE, default=DISABLED_THRESHOLD): vol.All(
-                vol.Coerce(float), vol.Range(min=0, max=100)
-            ),
+                CONF_MIN_LEVEL_CHANGE_SECONDS,
+                default=DEFAULT_MIN_LEVEL_CHANGE_SECONDS,
+            ): _number_selector(0, 3600),
+            vol.Required(
+                CONF_MIN_VOLTAGE, default=DISABLED_THRESHOLD
+            ): _number_selector(0, 100, 0.1),
             vol.Required(
                 CONF_MAX_CASE_TEMPERATURE, default=DISABLED_THRESHOLD
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, max=500)),
+            ): _number_selector(0, 500, 0.1),
             vol.Required(
                 CONF_MAX_EXHAUST_TEMPERATURE, default=DISABLED_THRESHOLD
-            ): vol.All(vol.Coerce(float), vol.Range(min=0, max=1000)),
+            ): _number_selector(0, 1000, 0.1),
         }
     )
 
@@ -164,7 +187,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(
                     CONF_ROOM_TEMPERATURE_OFFSET,
                     default=DEFAULT_ROOM_TEMPERATURE_OFFSET,
-                ): vol.All(vol.Coerce(float), vol.Range(min=-20, max=20)),
+                ): _number_selector(-20, 20, 0.1),
             }
         )
 
@@ -182,23 +205,44 @@ class DieselLevelThermostatOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Configure output and safety thresholds."""
+        """Configure the room-feedback source first."""
         if user_input is not None:
-            if user_input[CONF_MIN_LEVEL] > user_input[CONF_MAX_LEVEL]:
-                return self.async_show_form(
-                    step_id="init",
-                    data_schema=self._options_schema(),
-                    errors={"base": "invalid_level_range"},
-                )
-            return self.async_create_entry(title="", data=user_input)
+            self._room_feedback = user_input
+            return await self.async_step_advanced()
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(
-                self._options_schema(), self.config_entry.options
+                self._room_feedback_schema(), self.config_entry.options
             ),
         )
 
-    def _options_schema(self) -> vol.Schema:
+    async def async_step_advanced(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Configure controller tuning and optional safety limits."""
+        if user_input is not None:
+            data = {
+                **self.config_entry.options,
+                **getattr(self, "_room_feedback", {}),
+                **user_input,
+            }
+            if data[CONF_MIN_LEVEL] > data[CONF_MAX_LEVEL]:
+                return self.async_show_form(
+                    step_id="advanced",
+                    data_schema=self.add_suggested_values_to_schema(
+                        self._advanced_options_schema(), user_input
+                    ),
+                    errors={"base": "invalid_level_range"},
+                )
+            return self.async_create_entry(title="", data=data)
+        return self.async_show_form(
+            step_id="advanced",
+            data_schema=self.add_suggested_values_to_schema(
+                self._advanced_options_schema(), self.config_entry.options
+            ),
+        )
+
+    def _room_feedback_schema(self) -> vol.Schema:
         """Use the configured room sensor as the editable default."""
         return options_schema(
             self.config_entry.options.get(
@@ -206,3 +250,8 @@ class DieselLevelThermostatOptionsFlow(config_entries.OptionsFlow):
                 self.config_entry.data.get(CONF_ROOM_TEMPERATURE),
             )
         )
+
+    @staticmethod
+    def _advanced_options_schema() -> vol.Schema:
+        """Return the advanced tuning and safety options schema."""
+        return advanced_options_schema()

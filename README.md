@@ -120,8 +120,9 @@ a replacement for the heater's firmware safety systems.
 3. Add **Diesel Level Thermostat** from Settings > Devices & services and choose
    the Diesel Heater device.
 4. Choose the room-temperature sensor and, if needed, a local correction. The
-   source device's physical telemetry is discovered automatically. Both choices
-   remain editable from the thermostat's Options.
+   source device's physical telemetry is discovered automatically. In Options,
+   room feedback comes first; controller tuning and safety limits follow in a
+   separate advanced step with field-level descriptions.
 5. Put the heater in **Level Mode**, then use the new climate entity and adjust
    the controller options as needed.
 
