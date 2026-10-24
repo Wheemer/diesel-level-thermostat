@@ -24,7 +24,9 @@ def target_level(
         return min_level
 
     span = max_level - min_level
-    scaled = math.ceil((error / proportional_band) * span)
+    # Unit conversion can turn an exact discrete boundary into a value such as
+    # 5.000000000000001. Keep that boundary at its intended level.
+    scaled = math.ceil((error / proportional_band) * span - 1e-9)
     return min(max_level, max(min_level, min_level + scaled))
 
 

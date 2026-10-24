@@ -40,6 +40,8 @@ DEFAULT_HOT_TOLERANCE: Final = 0.5
 DEFAULT_MIN_ON_SECONDS: Final = 300
 DEFAULT_MIN_OFF_SECONDS: Final = 300
 DEFAULT_MIN_LEVEL_CHANGE_SECONDS: Final = 60
+# Re-evaluate an active heating cycle even if the source emits no state event.
+CONTROL_RECHECK_SECONDS: Final = 60
 DISABLED_THRESHOLD: Final = 0.0
 
 OPTIONAL_ENTITY_KEYS: Final = (

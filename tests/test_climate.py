@@ -15,9 +15,12 @@ from homeassistant.const import (
 import custom_components.diesel_level_thermostat.climate as climate_module
 from custom_components.diesel_level_thermostat.climate import DieselLevelThermostat
 from custom_components.diesel_level_thermostat.const import (
+    CONF_CASE_TEMPERATURE,
+    CONF_FAULT_SENSOR,
     CONF_HEATER_LEVEL,
     CONF_HEATER_POWER,
     CONF_LEVEL_MODE_VALUE,
+    CONF_MAX_CASE_TEMPERATURE,
     CONF_MIN_LEVEL_CHANGE_SECONDS,
     CONF_ROOM_TEMPERATURE,
     CONF_ROOM_TEMPERATURE_OFFSET,
@@ -34,6 +37,14 @@ class FakeStates:
     def get(self, entity_id: str) -> SimpleNamespace | None:
         """Return the state for an entity."""
         return self._states.get(entity_id)
+
+
+@pytest.fixture(autouse=True)
+def control_timer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep delayed control callbacks deterministic in the lightweight harness."""
+    monkeypatch.setattr(
+        climate_module, "async_call_later", lambda *_args, **_kwargs: lambda: None
+    )
 
 
 def entity(state: str, **attributes: object) -> SimpleNamespace:
@@ -139,6 +150,127 @@ async def test_controls_level_and_power_only_in_level_mode() -> None:
     assert services.async_call.await_args_list[0].kwargs["blocking"] is True
     assert services.async_call.await_args_list[0].args[2]["percentage"] == 50
     assert services.async_call.await_args_list[1].args[:2] == ("switch", "turn_on")
+
+
+@pytest.mark.asyncio
+async def test_fahrenheit_control_uses_celsius_tuning_values() -> None:
+    """A 5°F error is not incorrectly treated as a 5°C full-demand error."""
+    thermostat, services = controller()
+    thermostat.hass.config.units.temperature_unit = UnitOfTemperature.FAHRENHEIT
+    thermostat._attr_temperature_unit = UnitOfTemperature.FAHRENHEIT
+    thermostat._target_temperature = 60
+    thermostat.hass.states._states["sensor.room_temperature"] = entity(
+        "55", unit_of_measurement="°F"
+    )
+
+    await thermostat._async_control()
+
+    services.async_call.assert_any_await(
+        "fan",
+        "set_percentage",
+        {"entity_id": "fan.heater_level", "percentage": 60},
+        blocking=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_fahrenheit_control_stops_above_hot_tolerance() -> None:
+    """A 64°F room temperature crosses the default 0.5°C stop tolerance."""
+    thermostat, services = controller()
+    thermostat.hass.config.units.temperature_unit = UnitOfTemperature.FAHRENHEIT
+    thermostat._attr_temperature_unit = UnitOfTemperature.FAHRENHEIT
+    thermostat._target_temperature = 60
+    thermostat.hass.states._states["sensor.room_temperature"] = entity(
+        "64", unit_of_measurement="°F"
+    )
+    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
+
+    await thermostat._async_control()
+
+    services.async_call.assert_awaited_once_with(
+        "switch",
+        "turn_off",
+        {"entity_id": "switch.heater_power"},
+        blocking=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_heating_schedules_a_periodic_control_recheck(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Active heating never depends solely on future source-state events."""
+    thermostat, _ = controller()
+    scheduled: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        climate_module,
+        "async_call_later",
+        lambda _hass, delay, callback: (
+            scheduled.update({"delay": delay, "callback": callback}) or (lambda: None)
+        ),
+    )
+
+    await thermostat._async_control()
+
+    assert scheduled["delay"] == 60
+
+
+@pytest.mark.asyncio
+async def test_virtual_off_stops_source_after_mode_changes() -> None:
+    """A requested virtual off retains power control outside Level Mode."""
+    thermostat, services = controller(mode="Temperature")
+    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
+
+    await thermostat.async_turn_off()
+
+    services.async_call.assert_awaited_once_with(
+        "switch",
+        "turn_off",
+        {"entity_id": "switch.heater_power"},
+        blocking=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_fault_stops_source_after_mode_changes() -> None:
+    """A configured fault can use power control outside Level Mode."""
+    thermostat, services = controller(mode="Temperature")
+    thermostat.config[CONF_FAULT_SENSOR] = "binary_sensor.heater_fault"
+    thermostat.hass.states._states["binary_sensor.heater_fault"] = entity(STATE_ON)
+    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
+
+    await thermostat._async_control()
+
+    services.async_call.assert_awaited_once_with(
+        "switch",
+        "turn_off",
+        {"entity_id": "switch.heater_power"},
+        blocking=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_fahrenheit_thermal_limit_uses_celsius_threshold() -> None:
+    """A 220°F case sensor exceeds a configured 100°C safety limit."""
+    thermostat, services = controller()
+    thermostat.config[CONF_CASE_TEMPERATURE] = "sensor.case_temperature"
+    thermostat.config[CONF_MAX_CASE_TEMPERATURE] = 100
+    thermostat.hass.config.units.temperature_unit = UnitOfTemperature.FAHRENHEIT
+    thermostat._attr_temperature_unit = UnitOfTemperature.FAHRENHEIT
+    thermostat.hass.states._states["sensor.case_temperature"] = entity(
+        "220", unit_of_measurement="°F"
+    )
+    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
+
+    await thermostat._async_control()
+
+    services.async_call.assert_awaited_once_with(
+        "switch",
+        "turn_off",
+        {"entity_id": "switch.heater_power"},
+        blocking=True,
+    )
 
 
 @pytest.mark.asyncio

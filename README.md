@@ -100,7 +100,10 @@ The controller:
 - stops the source through its normal Power entity when an enabled safety input
   is active.
 
-The default level-change interval is 60 seconds. Set it to `0` only to disable descent pacing.
+The proportional band, start/stop tolerances, and thermal-safety thresholds
+are configured in **Celsius**, regardless of Home Assistant's display unit.
+The default level-change interval is 60 seconds. Set it to `0` only to disable
+descent pacing; active heating is still re-evaluated at least once a minute.
 
 The controller never writes the heater's native temperature mode.
 

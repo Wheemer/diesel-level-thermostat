@@ -56,6 +56,7 @@ from .const import (
     CONF_RUNNING_MODE,
     CONF_SOURCE_DEVICE_ID,
     CONF_VOLTAGE_SENSOR,
+    CONTROL_RECHECK_SECONDS,
     DEFAULT_COLD_TOLERANCE,
     DEFAULT_HOT_TOLERANCE,
     DEFAULT_MAX_LEVEL,
@@ -297,19 +298,41 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
     async def _async_control(self) -> None:
         """Apply staged output only while this controller owns Level Mode."""
         async with self._control_lock:
-            if self._hvac_mode != HVACMode.HEAT or not self.available:
+            if self._hvac_mode != HVACMode.HEAT:
+                return
+            # The source marks the level fan unavailable during burn-off.
+            # Preserve that hard gate so this thermostat never interrupts its
+            # controlled cooldown sequence.
+            if self._safety_blocked():
+                await self._turn_source_off("configured safety input is active")
+                return
+            if not self.available:
                 return
             temperature = self.current_temperature
             if temperature is None or self._target_temperature is None:
                 return
-            if self._safety_blocked():
-                await self._turn_source_off("configured safety input is active")
-                return
+
+            # Tuning values are stored in Celsius, regardless of Home
+            # Assistant's display unit. Compare all control inputs in that
+            # same unit so a Fahrenheit installation does not treat a 5°F
+            # error as a 5°C proportional band.
+            control_temperature = self._to_celsius(temperature)
+            control_target = self._to_celsius(self._target_temperature)
 
             source_on = self._is_source_on()
+            _LOGGER.debug(
+                "Level control: room=%s%s (%sC) target=%s%s (%sC) source_on=%s",
+                temperature,
+                self._attr_temperature_unit,
+                control_temperature,
+                self._target_temperature,
+                self._attr_temperature_unit,
+                control_target,
+                source_on,
+            )
             if should_stop(
-                current_temperature=temperature,
-                target_temperature=self._target_temperature,
+                current_temperature=control_temperature,
+                target_temperature=control_target,
                 hot_tolerance=self.config.get(
                     CONF_HOT_TOLERANCE, DEFAULT_HOT_TOLERANCE
                 ),
@@ -326,8 +349,8 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
 
             if not source_on:
                 if not should_start(
-                    current_temperature=temperature,
-                    target_temperature=self._target_temperature,
+                    current_temperature=control_temperature,
+                    target_temperature=control_target,
                     cold_tolerance=self.config.get(
                         CONF_COLD_TOLERANCE, DEFAULT_COLD_TOLERANCE
                     ),
@@ -341,8 +364,8 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
                     return
 
             demand_level = target_level(
-                current_temperature=temperature,
-                target_temperature=self._target_temperature,
+                current_temperature=control_temperature,
+                target_temperature=control_target,
                 min_level=self.config.get(CONF_MIN_LEVEL, DEFAULT_MIN_LEVEL),
                 max_level=self.config.get(CONF_MAX_LEVEL, DEFAULT_MAX_LEVEL),
                 proportional_band=self.config.get(
@@ -350,6 +373,11 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
                 ),
             )
             current_level = self._source_level()
+            _LOGGER.debug(
+                "Level control demand: current_level=%s demand_level=%s",
+                current_level,
+                demand_level,
+            )
             level = demand_level
             if source_on and current_level is not None and current_level > demand_level:
                 level = current_level - 1
@@ -367,7 +395,18 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
                 )
                 if delay:
                     self._schedule_control_after(delay)
+            # A sensor or source event normally drives control, but never
+            # depend on an event to enforce a target or safety threshold.
+            self._schedule_control_after(CONTROL_RECHECK_SECONDS)
             self.async_write_ha_state()
+
+    def _to_celsius(self, temperature: float) -> float:
+        """Convert a Home Assistant display temperature to control Celsius."""
+        return TemperatureConverter.convert(
+            temperature,
+            self._attr_temperature_unit,
+            UnitOfTemperature.CELSIUS,
+        )
 
     def _is_source_on(self) -> bool:
         """Return current source power state."""
@@ -454,9 +493,14 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         )
         self._last_level_change = time.monotonic()
 
+    def _can_request_source_shutdown(self) -> bool:
+        """Keep burn-off/cooldown ownership with the source integration."""
+        level = self.hass.states.get(self.config[CONF_HEATER_LEVEL])
+        return bool(level and level.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN))
+
     async def _turn_source_off(self, reason: str) -> None:
-        """Request normal heater shutdown through its public power entity."""
-        if not self._is_source_on() or not self.available:
+        """Request normal heater shutdown without interrupting burn-off."""
+        if not self._is_source_on() or not self._can_request_source_shutdown():
             return
         _LOGGER.info("Requesting source heater shutdown: %s", reason)
         await self._call_source("switch", "turn_off", self.config[CONF_HEATER_POWER])
@@ -493,7 +537,7 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         """Return true when an enabled temperature safety limit is exceeded."""
         limit = float(self.config.get(limit_key, 0))
         value = self._temperature_from_entity(self.config.get(entity_key))
-        return limit > 0 and value is not None and value >= limit
+        return limit > 0 and value is not None and self._to_celsius(value) >= limit
 
     def _below_limit(self, entity_key: str, limit_key: str) -> bool:
         """Return true when an enabled voltage limit is breached."""
