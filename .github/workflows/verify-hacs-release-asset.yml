@@ -1,0 +1,29 @@
+name: Verify HACS release asset
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to verify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify-release-asset:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+      - name: Verify the published HACS asset
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: >-
+          python3 scripts/verify_hacs_release_asset.py
+          "${{ github.event.release.tag_name || inputs.tag }}" --published

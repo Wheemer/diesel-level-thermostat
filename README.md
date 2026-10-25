@@ -144,3 +144,12 @@ ruff check .
 ruff format --check .
 python -m compileall custom_components tests
 ```
+## Release Asset Check
+
+This integration uses a HACS ZIP release asset. Before publishing a release, build and validate the asset from the exact tag:
+
+```bash
+python3 scripts/build_hacs_release_asset.py vX.Y.Z dist/diesel-level-thermostat.zip
+```
+
+Attach that generated ZIP when creating the GitHub release. The release workflow also verifies that the published release contains a downloadable asset with the name declared in `hacs.json`.
