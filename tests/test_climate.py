@@ -1,7 +1,7 @@
 """Behavior tests for the direct staged climate controller."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from homeassistant.components.climate import HVACMode
@@ -169,6 +169,50 @@ async def test_stops_at_target_with_normal_source_power_command() -> None:
     )
     thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
     await thermostat._async_control()
+    services.async_call.assert_awaited_once_with(
+        "switch", "turn_off", {"entity_id": "switch.heater_power"}, blocking=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_level_mode_transition_shuts_down_when_already_above_target() -> None:
+    """Entering Level Mode must immediately evaluate an active thermostat."""
+    thermostat, services = controller(mode="Temperature Mode")
+    thermostat.hass.config.units.temperature_unit = UnitOfTemperature.FAHRENHEIT
+    thermostat._attr_temperature_unit = UnitOfTemperature.FAHRENHEIT
+    thermostat._target_temperature = 57
+    thermostat.hass.states._states["sensor.room_temperature"] = entity(
+        "61", unit_of_measurement="°F"
+    )
+    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
+    thermostat.hass.states._states["select.heater_mode"] = entity("Level Mode")
+    scheduled: list[object] = []
+    thermostat.hass.async_create_task = scheduled.append
+
+    thermostat._async_source_changed(MagicMock())
+
+    assert len(scheduled) == 1
+    await scheduled[0]
+    services.async_call.assert_awaited_once_with(
+        "switch", "turn_off", {"entity_id": "switch.heater_power"}, blocking=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_turning_on_virtual_thermostat_above_target_requests_shutdown() -> None:
+    """Enabling an already-Level-mode heater above target must shut it down."""
+    thermostat, services = controller()
+    thermostat.hass.config.units.temperature_unit = UnitOfTemperature.FAHRENHEIT
+    thermostat._attr_temperature_unit = UnitOfTemperature.FAHRENHEIT
+    thermostat._target_temperature = 57
+    thermostat._hvac_mode = HVACMode.OFF
+    thermostat.hass.states._states["sensor.room_temperature"] = entity(
+        "61", unit_of_measurement="°F"
+    )
+    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
+
+    await thermostat.async_turn_on()
+
     services.async_call.assert_awaited_once_with(
         "switch", "turn_off", {"entity_id": "switch.heater_power"}, blocking=True
     )
