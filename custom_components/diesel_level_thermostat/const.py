@@ -20,14 +20,6 @@ CONF_CASE_TEMPERATURE: Final = "case_temperature"
 CONF_MAX_CASE_TEMPERATURE: Final = "max_case_temperature"
 CONF_EXHAUST_TEMPERATURE: Final = "exhaust_temperature"
 CONF_MAX_EXHAUST_TEMPERATURE: Final = "max_exhaust_temperature"
-CONF_MIN_LEVEL: Final = "min_level"
-CONF_MAX_LEVEL: Final = "max_level"
-CONF_PROPORTIONAL_BAND: Final = "proportional_band"
-CONF_COLD_TOLERANCE: Final = "cold_tolerance"
-CONF_HOT_TOLERANCE: Final = "hot_tolerance"
-CONF_MIN_ON_SECONDS: Final = "min_on_seconds"
-CONF_MIN_OFF_SECONDS: Final = "min_off_seconds"
-CONF_MIN_LEVEL_CHANGE_SECONDS: Final = "min_level_change_seconds"
 
 DEFAULT_LEVEL_MODE_VALUE: Final = "Level"
 DEFAULT_ROOM_TEMPERATURE_OFFSET: Final = 0.0
@@ -35,11 +27,6 @@ LEVEL_MODE_VALUES: Final = frozenset({"Level", "Level Mode"})
 DEFAULT_MIN_LEVEL: Final = 1
 DEFAULT_MAX_LEVEL: Final = 10
 DEFAULT_PROPORTIONAL_BAND: Final = 5.0
-DEFAULT_COLD_TOLERANCE: Final = 0.5
-DEFAULT_HOT_TOLERANCE: Final = 0.5
-DEFAULT_MIN_ON_SECONDS: Final = 300
-DEFAULT_MIN_OFF_SECONDS: Final = 300
-DEFAULT_MIN_LEVEL_CHANGE_SECONDS: Final = 60
 # Re-evaluate an active heating cycle even if the source emits no state event.
 CONTROL_RECHECK_SECONDS: Final = 60
 DISABLED_THRESHOLD: Final = 0.0

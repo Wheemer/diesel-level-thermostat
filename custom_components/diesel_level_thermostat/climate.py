@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-import time
-from datetime import datetime
 from typing import Any, ClassVar
 
 from homeassistant.components.climate import (
@@ -27,7 +25,6 @@ from homeassistant.const import (
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import (
-    async_call_later,
     async_track_state_change_event,
 )
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -35,41 +32,27 @@ from homeassistant.util.unit_conversion import TemperatureConverter
 
 from .const import (
     CONF_CASE_TEMPERATURE,
-    CONF_COLD_TOLERANCE,
     CONF_EXHAUST_TEMPERATURE,
     CONF_FAULT_SENSOR,
     CONF_HEATER_LEVEL,
     CONF_HEATER_POWER,
-    CONF_HOT_TOLERANCE,
     CONF_LEVEL_MODE_VALUE,
     CONF_MAX_CASE_TEMPERATURE,
     CONF_MAX_EXHAUST_TEMPERATURE,
-    CONF_MAX_LEVEL,
-    CONF_MIN_LEVEL,
-    CONF_MIN_LEVEL_CHANGE_SECONDS,
-    CONF_MIN_OFF_SECONDS,
-    CONF_MIN_ON_SECONDS,
     CONF_MIN_VOLTAGE,
-    CONF_PROPORTIONAL_BAND,
     CONF_ROOM_TEMPERATURE,
     CONF_ROOM_TEMPERATURE_OFFSET,
     CONF_RUNNING_MODE,
     CONF_SOURCE_DEVICE_ID,
     CONF_VOLTAGE_SENSOR,
-    CONTROL_RECHECK_SECONDS,
-    DEFAULT_COLD_TOLERANCE,
-    DEFAULT_HOT_TOLERANCE,
     DEFAULT_MAX_LEVEL,
     DEFAULT_MIN_LEVEL,
-    DEFAULT_MIN_LEVEL_CHANGE_SECONDS,
-    DEFAULT_MIN_OFF_SECONDS,
-    DEFAULT_MIN_ON_SECONDS,
     DEFAULT_PROPORTIONAL_BAND,
     DEFAULT_ROOM_TEMPERATURE_OFFSET,
     LEVEL_MODE_VALUES,
     OPTIONAL_ENTITY_KEYS,
 )
-from .control import should_start, should_stop, target_level
+from .control import target_level
 from .source import source_device_id, source_telemetry_entity_ids
 
 _LOGGER = logging.getLogger(__name__)
@@ -112,11 +95,7 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             self._attr_target_temperature_step = 1
         self._hvac_mode = HVACMode.OFF
         self._target_temperature: float | None = None
-        self._last_power_change: float | None = None
-        self._last_level_change: float | None = None
         self._control_lock = asyncio.Lock()
-        self._control_callback: Any = None
-        self._next_control_at: float | None = None
         self._source_device_id = self.config.get(CONF_SOURCE_DEVICE_ID)
         self._source_telemetry: tuple[str, ...] = ()
 
@@ -240,33 +219,12 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
                 self.hass, watched, self._async_source_changed
             )
         )
-        self.async_on_remove(self._cancel_control_timer)
-        self._initialize_running_source_timing()
         await self._async_control()
 
     @callback
-    def _async_source_changed(self, event: Event) -> None:
-        """Re-evaluate when source telemetry changes."""
-        entity_id = event.data["entity_id"]
-        if entity_id == self.config[CONF_HEATER_POWER]:
-            self._last_power_change = time.monotonic()
-            self._cancel_control_timer()
+    def _async_source_changed(self, _event: Event) -> None:
+        """Re-evaluate directly when the selected source state changes."""
         self.async_write_ha_state()
-        self.hass.async_create_task(self._async_control())
-
-    @callback
-    def _cancel_control_timer(self) -> None:
-        """Cancel a pending power or output re-evaluation."""
-        if self._control_callback is not None:
-            self._control_callback()
-            self._control_callback = None
-        self._next_control_at = None
-
-    @callback
-    def _async_control_timer(self, _now: datetime) -> None:
-        """Run the deferred control evaluation once its boundary is reached."""
-        self._control_callback = None
-        self._next_control_at = None
         self.hass.async_create_task(self._async_control())
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
@@ -280,7 +238,6 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         """Change virtual heating demand."""
         self._hvac_mode = hvac_mode
         if hvac_mode == HVACMode.OFF:
-            self._cancel_control_timer()
             async with self._control_lock:
                 await self._turn_source_off("virtual thermostat turned off")
         else:
@@ -330,74 +287,26 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
                 control_target,
                 source_on,
             )
-            if should_stop(
-                current_temperature=control_temperature,
-                target_temperature=control_target,
-                hot_tolerance=self.config.get(
-                    CONF_HOT_TOLERANCE, DEFAULT_HOT_TOLERANCE
-                ),
-            ):
+            # The controller has one job: heat below target at the level
+            # implied by the current gap, then request normal shutdown at target.
+            if control_temperature >= control_target:
                 if source_on:
-                    remaining = self._remaining_power_transition(
-                        CONF_MIN_ON_SECONDS, DEFAULT_MIN_ON_SECONDS
-                    )
-                    if remaining:
-                        self._schedule_control_after(remaining)
-                    else:
-                        await self._turn_source_off("target temperature reached")
+                    await self._turn_source_off("target temperature reached")
                 return
-
-            if not source_on:
-                if not should_start(
-                    current_temperature=control_temperature,
-                    target_temperature=control_target,
-                    cold_tolerance=self.config.get(
-                        CONF_COLD_TOLERANCE, DEFAULT_COLD_TOLERANCE
-                    ),
-                ):
-                    return
-                remaining = self._remaining_power_transition(
-                    CONF_MIN_OFF_SECONDS, DEFAULT_MIN_OFF_SECONDS
-                )
-                if remaining:
-                    self._schedule_control_after(remaining)
-                    return
 
             demand_level = target_level(
                 current_temperature=control_temperature,
                 target_temperature=control_target,
-                min_level=self.config.get(CONF_MIN_LEVEL, DEFAULT_MIN_LEVEL),
-                max_level=self.config.get(CONF_MAX_LEVEL, DEFAULT_MAX_LEVEL),
-                proportional_band=self.config.get(
-                    CONF_PROPORTIONAL_BAND, DEFAULT_PROPORTIONAL_BAND
-                ),
+                min_level=DEFAULT_MIN_LEVEL,
+                max_level=DEFAULT_MAX_LEVEL,
+                proportional_band=DEFAULT_PROPORTIONAL_BAND,
             )
-            current_level = self._source_level()
-            _LOGGER.debug(
-                "Level control demand: current_level=%s demand_level=%s",
-                current_level,
-                demand_level,
-            )
-            level = demand_level
-            if source_on and current_level is not None and current_level > demand_level:
-                level = current_level - 1
-
-            await self._set_source_level(level, source_on=source_on)
+            _LOGGER.debug("Level control demand: level=%s", demand_level)
+            await self._set_source_level(demand_level)
             if not source_on:
                 await self._call_source(
                     "switch", "turn_on", self.config[CONF_HEATER_POWER]
                 )
-                self._last_power_change = time.monotonic()
-            if level != demand_level:
-                delay = self.config.get(
-                    CONF_MIN_LEVEL_CHANGE_SECONDS,
-                    DEFAULT_MIN_LEVEL_CHANGE_SECONDS,
-                )
-                if delay:
-                    self._schedule_control_after(delay)
-            # A sensor or source event normally drives control, but never
-            # depend on an event to enforce a target or safety threshold.
-            self._schedule_control_after(CONTROL_RECHECK_SECONDS)
             self.async_write_ha_state()
 
     def _to_celsius(self, temperature: float) -> float:
@@ -413,53 +322,12 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         state = self.hass.states.get(self.config[CONF_HEATER_POWER])
         return bool(state and state.state == STATE_ON)
 
-    def _schedule_control_after(self, delay: float) -> None:
-        """Schedule the earliest deferred control re-evaluation."""
-        deadline = time.monotonic() + delay
-        if self._next_control_at is not None and self._next_control_at <= deadline:
-            return
-        self._cancel_control_timer()
-        self._next_control_at = deadline
-        self._control_callback = async_call_later(
-            self.hass, delay, self._async_control_timer
-        )
-
     def _is_level_mode(self, value: str) -> bool:
         """Accept the source integration's current and legacy Level labels."""
         return value in {
             self.config.get(CONF_LEVEL_MODE_VALUE),
             *LEVEL_MODE_VALUES,
         }
-
-    def _remaining_power_transition(self, key: str, default: int) -> float:
-        """Return the remaining time before another power transition is allowed."""
-        if self._last_power_change is None:
-            return 0
-        return max(
-            0,
-            self.config.get(key, default)
-            - (time.monotonic() - self._last_power_change),
-        )
-
-    def _initialize_running_source_timing(self) -> None:
-        """Conservatively guard an already-running heater after HA starts."""
-        if not self._is_source_on():
-            return
-        now = time.monotonic()
-        self._last_power_change = now
-        self._last_level_change = now
-
-    def _remaining_level_change(self) -> float:
-        """Return the remaining time before another level change is allowed."""
-        if self._last_level_change is None:
-            return 0
-        return max(
-            0,
-            self.config.get(
-                CONF_MIN_LEVEL_CHANGE_SECONDS, DEFAULT_MIN_LEVEL_CHANGE_SECONDS
-            )
-            - (time.monotonic() - self._last_level_change),
-        )
 
     def _source_level(self) -> int | None:
         """Return the current source level from its ten-step fan contract."""
@@ -472,18 +340,10 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             return None
         return max(1, min(10, math.ceil(percentage / 10)))
 
-    async def _set_source_level(self, level: int, *, source_on: bool) -> None:
+    async def _set_source_level(self, level: int) -> None:
         """Set a discrete source level via the fan percentage contract."""
         current_level = self._source_level()
         if current_level == level:
-            return
-        if (
-            source_on
-            and current_level is not None
-            and level < current_level
-            and (remaining := self._remaining_level_change())
-        ):
-            self._schedule_control_after(remaining)
             return
         await self._call_source(
             "fan",
@@ -491,7 +351,6 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             self.config[CONF_HEATER_LEVEL],
             percentage=level * 10,
         )
-        self._last_level_change = time.monotonic()
 
     def _can_request_source_shutdown(self) -> bool:
         """Keep burn-off/cooldown ownership with the source integration."""
@@ -504,7 +363,6 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             return
         _LOGGER.info("Requesting source heater shutdown: %s", reason)
         await self._call_source("switch", "turn_off", self.config[CONF_HEATER_POWER])
-        self._last_power_change = time.monotonic()
 
     async def _call_source(
         self, domain: str, service: str, entity_id: str, **data: Any

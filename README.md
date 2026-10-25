@@ -91,19 +91,11 @@ steps a running heater down one level at a time as demand falls. One configured
 room temperature is the feedback input; it is never averaged with case, intake,
 outlet, or exhaust probes because they measure different physical locations.
 
-The controller:
-
-- uses separate start and stop tolerances;
-- schedules re-evaluation at exact minimum-on and minimum-off boundaries;
-- serializes source commands;
-- rate-limits level changes; and
-- stops the source through its normal Power entity when an enabled safety input
-  is active.
-
-The proportional band, start/stop tolerances, and thermal-safety thresholds
-are configured in **Celsius**, regardless of Home Assistant's display unit.
-The default level-change interval is 60 seconds. Set it to `0` only to disable
-descent pacing; active heating is still re-evaluated at least once a minute.
+The controller uses one room-temperature feedback source. Below the selected
+target it directly chooses a level from the current temperature gap; at or above
+the target it requests the heater's normal Power-off command. It does not add
+hold timers, overshoot bands, periodic control timers, or heater calibration
+controls.
 
 The controller never writes the heater's native temperature mode.
 
@@ -122,10 +114,8 @@ a replacement for the heater's firmware safety systems.
    Assistant.
 3. Add **Diesel Level Thermostat** from Settings > Devices & services and choose
    the Diesel Heater device.
-4. Choose the room-temperature sensor and, if needed, a local correction. The
-   source device's physical telemetry is discovered automatically. In Options,
-   room feedback comes first; controller tuning and safety limits follow in a
-   separate advanced step with field-level descriptions.
+4. Choose the room-temperature sensor and, if needed, a local correction.
+   These two feedback settings remain available in Options.
 5. Put the heater in **Level Mode**, then use the new climate entity and adjust
    the controller options as needed.
 

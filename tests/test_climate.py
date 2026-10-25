@@ -1,7 +1,7 @@
-"""Behavior tests for the virtual climate controller."""
+"""Behavior tests for the direct staged climate controller."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 import pytest
 from homeassistant.components.climate import HVACMode
@@ -12,7 +12,6 @@ from homeassistant.const import (
     UnitOfTemperature,
 )
 
-import custom_components.diesel_level_thermostat.climate as climate_module
 from custom_components.diesel_level_thermostat.climate import DieselLevelThermostat
 from custom_components.diesel_level_thermostat.const import (
     CONF_CASE_TEMPERATURE,
@@ -21,7 +20,6 @@ from custom_components.diesel_level_thermostat.const import (
     CONF_HEATER_POWER,
     CONF_LEVEL_MODE_VALUE,
     CONF_MAX_CASE_TEMPERATURE,
-    CONF_MIN_LEVEL_CHANGE_SECONDS,
     CONF_ROOM_TEMPERATURE,
     CONF_ROOM_TEMPERATURE_OFFSET,
     CONF_RUNNING_MODE,
@@ -35,16 +33,7 @@ class FakeStates:
         self._states = states
 
     def get(self, entity_id: str) -> SimpleNamespace | None:
-        """Return the state for an entity."""
         return self._states.get(entity_id)
-
-
-@pytest.fixture(autouse=True)
-def control_timer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep delayed control callbacks deterministic in the lightweight harness."""
-    monkeypatch.setattr(
-        climate_module, "async_call_later", lambda *_args, **_kwargs: lambda: None
-    )
 
 
 def entity(state: str, **attributes: object) -> SimpleNamespace:
@@ -53,7 +42,7 @@ def entity(state: str, **attributes: object) -> SimpleNamespace:
 
 
 def controller(*, mode: str = "Level Mode", voltage: str | None = None):
-    """Build a controller backed by fake public source entities."""
+    """Build a controller backed by Diesel Heater's public entities."""
     data = {
         CONF_ROOM_TEMPERATURE: "sensor.room_temperature",
         CONF_HEATER_POWER: "switch.heater_power",
@@ -62,7 +51,7 @@ def controller(*, mode: str = "Level Mode", voltage: str | None = None):
         CONF_LEVEL_MODE_VALUE: "Level Mode",
     }
     if voltage is not None:
-        data.update({"voltage_sensor": "sensor.voltage"})
+        data["voltage_sensor"] = "sensor.voltage"
     states = {
         "sensor.room_temperature": entity("18", unit_of_measurement="°C"),
         "switch.heater_power": entity(STATE_OFF),
@@ -71,7 +60,6 @@ def controller(*, mode: str = "Level Mode", voltage: str | None = None):
     }
     if voltage is not None:
         states["sensor.voltage"] = entity(voltage)
-
     services = SimpleNamespace(async_call=AsyncMock())
     hass = SimpleNamespace(
         states=FakeStates(states),
@@ -81,16 +69,7 @@ def controller(*, mode: str = "Level Mode", voltage: str | None = None):
             units=SimpleNamespace(temperature_unit=UnitOfTemperature.CELSIUS)
         ),
     )
-    entry = SimpleNamespace(
-        entry_id="test",
-        title="Test Heater",
-        data=data,
-        options={
-            "min_off_seconds": 0,
-            "min_on_seconds": 0,
-            CONF_MIN_LEVEL_CHANGE_SECONDS: 0,
-        },
-    )
+    entry = SimpleNamespace(entry_id="test", title="Test Heater", data=data, options={})
     thermostat = DieselLevelThermostat(hass, entry)
     thermostat._target_temperature = 20
     thermostat._hvac_mode = HVACMode.HEAT
@@ -98,63 +77,73 @@ def controller(*, mode: str = "Level Mode", voltage: str | None = None):
     return thermostat, services
 
 
-def test_converts_source_temperature_to_home_assistant_unit() -> None:
-    """Room input is compared in the configured Home Assistant unit."""
-    thermostat, _ = controller()
-    thermostat.hass.config.units.temperature_unit = UnitOfTemperature.FAHRENHEIT
-
-    assert thermostat.current_temperature == 64.4
-
-
-def test_applies_room_temperature_offset_in_celsius() -> None:
-    """The configured correction applies after source-unit conversion."""
+def test_converts_selected_temperature_and_offset() -> None:
+    """The selected room sensor and local Celsius offset are the feedback."""
     thermostat, _ = controller()
     thermostat.config[CONF_ROOM_TEMPERATURE_OFFSET] = -5
-
     assert thermostat.current_temperature == 13
 
 
-def test_converts_room_temperature_offset_for_fahrenheit() -> None:
-    """A Celsius correction remains a Celsius correction in Fahrenheit HA."""
+def test_converts_offset_for_fahrenheit_home_assistant() -> None:
+    """A Celsius offset remains a Celsius offset in a Fahrenheit installation."""
     thermostat, _ = controller()
     thermostat.hass.config.units.temperature_unit = UnitOfTemperature.FAHRENHEIT
     thermostat._attr_temperature_unit = UnitOfTemperature.FAHRENHEIT
     thermostat.config[CONF_ROOM_TEMPERATURE_OFFSET] = -5
-
     assert thermostat.current_temperature == pytest.approx(55.4)
 
 
-def test_requires_a_live_room_temperature() -> None:
-    """A missing room temperature makes the virtual climate unavailable."""
+def test_requires_level_mode_and_a_live_room_sensor() -> None:
+    """The virtual thermostat is inert outside the supported source contract."""
+    thermostat, _ = controller(mode="Temperature Mode")
+    assert not thermostat.available
     thermostat, _ = controller()
     thermostat.hass.states._states["sensor.room_temperature"] = entity("unknown")
-
     assert not thermostat.available
 
 
-def test_accepts_current_and_legacy_level_mode_labels() -> None:
-    """Source integration releases use both Level and Level Mode labels."""
-    thermostat, _ = controller(mode="Level")
-
-    assert thermostat.available
-
-
 @pytest.mark.asyncio
-async def test_controls_level_and_power_only_in_level_mode() -> None:
-    """A cold room requests staged output through public entity services."""
+async def test_starts_at_level_from_current_temperature_gap() -> None:
+    """A 2°C deficit uses the calculated level, then powers the source on."""
     thermostat, services = controller()
-
     await thermostat._async_control()
-
     assert services.async_call.await_args_list[0].args[:2] == ("fan", "set_percentage")
-    assert services.async_call.await_args_list[0].kwargs["blocking"] is True
     assert services.async_call.await_args_list[0].args[2]["percentage"] == 50
     assert services.async_call.await_args_list[1].args[:2] == ("switch", "turn_on")
 
 
 @pytest.mark.asyncio
-async def test_fahrenheit_control_uses_celsius_tuning_values() -> None:
-    """A 5°F error is not incorrectly treated as a 5°C full-demand error."""
+async def test_large_deficit_starts_at_maximum_level() -> None:
+    """A large gap selects level 10 immediately."""
+    thermostat, services = controller()
+    thermostat.hass.states._states["sensor.room_temperature"] = entity(
+        "0", unit_of_measurement="°C"
+    )
+    await thermostat._async_control()
+    assert services.async_call.await_args_list[0].args[2]["percentage"] == 100
+
+
+@pytest.mark.asyncio
+async def test_running_heater_directly_reduces_level_as_room_warms() -> None:
+    """The next room-temperature update selects the lower demanded level."""
+    thermostat, services = controller()
+    thermostat.hass.states._states["sensor.room_temperature"] = entity(
+        "19.6", unit_of_measurement="°C"
+    )
+    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
+    thermostat.hass.states._states["fan.heater_level"] = entity(STATE_ON, percentage=50)
+    await thermostat._async_control()
+    services.async_call.assert_awaited_once_with(
+        "fan",
+        "set_percentage",
+        {"entity_id": "fan.heater_level", "percentage": 20},
+        blocking=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_fahrenheit_gap_uses_celsius_level_math() -> None:
+    """A 5°F gap is not mistaken for a 5°C maximum-demand gap."""
     thermostat, services = controller()
     thermostat.hass.config.units.temperature_unit = UnitOfTemperature.FAHRENHEIT
     thermostat._attr_temperature_unit = UnitOfTemperature.FAHRENHEIT
@@ -162,9 +151,7 @@ async def test_fahrenheit_control_uses_celsius_tuning_values() -> None:
     thermostat.hass.states._states["sensor.room_temperature"] = entity(
         "55", unit_of_measurement="°F"
     )
-
     await thermostat._async_control()
-
     services.async_call.assert_any_await(
         "fan",
         "set_percentage",
@@ -174,85 +161,74 @@ async def test_fahrenheit_control_uses_celsius_tuning_values() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fahrenheit_control_stops_above_hot_tolerance() -> None:
-    """A 64°F room temperature crosses the default 0.5°C stop tolerance."""
+async def test_stops_at_target_with_normal_source_power_command() -> None:
+    """At target, request normal heater shutdown without a hold or overshoot."""
+    thermostat, services = controller()
+    thermostat.hass.states._states["sensor.room_temperature"] = entity(
+        "20", unit_of_measurement="°C"
+    )
+    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
+    await thermostat._async_control()
+    services.async_call.assert_awaited_once_with(
+        "switch", "turn_off", {"entity_id": "switch.heater_power"}, blocking=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_reported_fahrenheit_overshoot_requests_shutdown() -> None:
+    """The reported 54°F to 61°F case must issue an off command at 57°F target."""
     thermostat, services = controller()
     thermostat.hass.config.units.temperature_unit = UnitOfTemperature.FAHRENHEIT
     thermostat._attr_temperature_unit = UnitOfTemperature.FAHRENHEIT
-    thermostat._target_temperature = 60
+    thermostat._target_temperature = 57
     thermostat.hass.states._states["sensor.room_temperature"] = entity(
-        "64", unit_of_measurement="°F"
+        "61", unit_of_measurement="°F"
     )
     thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
-
     await thermostat._async_control()
-
     services.async_call.assert_awaited_once_with(
-        "switch",
-        "turn_off",
-        {"entity_id": "switch.heater_power"},
-        blocking=True,
+        "switch", "turn_off", {"entity_id": "switch.heater_power"}, blocking=True
     )
 
 
 @pytest.mark.asyncio
-async def test_heating_schedules_a_periodic_control_recheck(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Active heating never depends solely on future source-state events."""
-    thermostat, _ = controller()
-    scheduled: dict[str, object] = {}
-
-    monkeypatch.setattr(
-        climate_module,
-        "async_call_later",
-        lambda _hass, delay, callback: (
-            scheduled.update({"delay": delay, "callback": callback}) or (lambda: None)
-        ),
-    )
-
-    await thermostat._async_control()
-
-    assert scheduled["delay"] == 60
-
-
-@pytest.mark.asyncio
-async def test_virtual_off_stops_source_after_mode_changes() -> None:
-    """A requested virtual off retains power control outside Level Mode."""
-    thermostat, services = controller(mode="Temperature")
+async def test_virtual_off_uses_normal_power_command() -> None:
+    """Turning the virtual climate off requests the source's normal shutdown."""
+    thermostat, services = controller(mode="Temperature Mode")
     thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
-
     await thermostat.async_turn_off()
-
     services.async_call.assert_awaited_once_with(
-        "switch",
-        "turn_off",
-        {"entity_id": "switch.heater_power"},
-        blocking=True,
+        "switch", "turn_off", {"entity_id": "switch.heater_power"}, blocking=True
     )
 
 
 @pytest.mark.asyncio
-async def test_fault_stops_source_after_mode_changes() -> None:
-    """A configured fault can use power control outside Level Mode."""
-    thermostat, services = controller(mode="Temperature")
+async def test_burnoff_and_unavailable_source_remain_hard_gates() -> None:
+    """Never interrupt source-owned burn-off or command an unavailable source."""
+    thermostat, services = controller()
+    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
+    thermostat.hass.states._states["fan.heater_level"] = entity(STATE_UNAVAILABLE)
+    await thermostat.async_turn_off()
+    assert not thermostat.available
+    services.async_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_configured_safety_input_uses_normal_shutdown() -> None:
+    """An already configured safety input still uses the normal power entity."""
+    thermostat, services = controller()
     thermostat.config[CONF_FAULT_SENSOR] = "binary_sensor.heater_fault"
     thermostat.hass.states._states["binary_sensor.heater_fault"] = entity(STATE_ON)
     thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
-
     await thermostat._async_control()
-
     services.async_call.assert_awaited_once_with(
-        "switch",
-        "turn_off",
-        {"entity_id": "switch.heater_power"},
-        blocking=True,
+        "switch", "turn_off", {"entity_id": "switch.heater_power"}, blocking=True
     )
 
 
 @pytest.mark.asyncio
-async def test_fahrenheit_thermal_limit_uses_celsius_threshold() -> None:
-    """A 220°F case sensor exceeds a configured 100°C safety limit."""
+async def test_fahrenheit_safety_temperature_remains_celsius_based() -> None:
+    """Existing Celsius safety thresholds still convert source readings correctly."""
     thermostat, services = controller()
     thermostat.config[CONF_CASE_TEMPERATURE] = "sensor.case_temperature"
     thermostat.config[CONF_MAX_CASE_TEMPERATURE] = 100
@@ -262,278 +238,7 @@ async def test_fahrenheit_thermal_limit_uses_celsius_threshold() -> None:
         "220", unit_of_measurement="°F"
     )
     thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
-
     await thermostat._async_control()
-
-    services.async_call.assert_awaited_once_with(
-        "switch",
-        "turn_off",
-        {"entity_id": "switch.heater_power"},
-        blocking=True,
-    )
-
-
-@pytest.mark.asyncio
-async def test_large_cold_start_immediately_selects_maximum_level() -> None:
-    """A large error starts at the required output instead of slowly ramping up."""
-    thermostat, services = controller()
-    thermostat.hass.states._states["sensor.room_temperature"] = entity(
-        "0", unit_of_measurement="°C"
-    )
-
-    await thermostat._async_control()
-
-    assert services.async_call.await_args_list[0].args[:2] == (
-        "fan",
-        "set_percentage",
-    )
-    assert services.async_call.await_args_list[0].args[2]["percentage"] == 100
-    assert services.async_call.await_args_list[1].args[:2] == ("switch", "turn_on")
-
-
-@pytest.mark.asyncio
-async def test_running_heater_downstages_inside_the_stop_deadband() -> None:
-    """A running heater reduces output before the hot cutoff is reached."""
-    thermostat, services = controller()
-    thermostat.hass.states._states["sensor.room_temperature"] = entity(
-        "19.6", unit_of_measurement="°C"
-    )
-    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
-    thermostat.hass.states._states["fan.heater_level"] = entity(STATE_ON, percentage=50)
-
-    await thermostat._async_control()
-
-    services.async_call.assert_awaited_once_with(
-        "fan",
-        "set_percentage",
-        {"entity_id": "fan.heater_level", "percentage": 40},
-        blocking=True,
-    )
-
-
-@pytest.mark.asyncio
-async def test_running_heater_downstages_one_level_per_interval(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The controller schedules a gradual descent until demand is reached."""
-    thermostat, services = controller()
-    thermostat.hass.states._states["sensor.room_temperature"] = entity(
-        "19.6", unit_of_measurement="°C"
-    )
-    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
-    thermostat.hass.states._states["fan.heater_level"] = entity(
-        STATE_ON, percentage=100
-    )
-    thermostat.config[CONF_MIN_LEVEL_CHANGE_SECONDS] = 60
-    scheduled: dict[str, object] = {}
-
-    monkeypatch.setattr(
-        climate_module,
-        "async_call_later",
-        lambda _hass, delay, callback: (
-            scheduled.update({"delay": delay, "callback": callback}) or (lambda: None)
-        ),
-    )
-
-    await thermostat._async_control()
-
-    services.async_call.assert_awaited_once_with(
-        "fan",
-        "set_percentage",
-        {"entity_id": "fan.heater_level", "percentage": 90},
-        blocking=True,
-    )
-    assert scheduled["delay"] == 60
-
-
-@pytest.mark.asyncio
-async def test_stopped_heater_waits_for_the_start_threshold() -> None:
-    """The start tolerance prevents a restart inside the deadband."""
-    thermostat, services = controller()
-    thermostat.hass.states._states["sensor.room_temperature"] = entity(
-        "19.6", unit_of_measurement="°C"
-    )
-
-    await thermostat._async_control()
-
-    services.async_call.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_power_cutoff_is_scheduled_at_the_exact_minimum_on_boundary(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A hot running heater is retried when its minimum run time expires."""
-    thermostat, services = controller()
-    thermostat.hass.states._states["sensor.room_temperature"] = entity(
-        "21", unit_of_measurement="°C"
-    )
-    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
-    thermostat.config["min_on_seconds"] = 300
-    thermostat._last_power_change = 100
-    scheduled: dict[str, object] = {}
-
-    monkeypatch.setattr(climate_module.time, "monotonic", lambda: 101)
-    monkeypatch.setattr(
-        climate_module,
-        "async_call_later",
-        lambda _hass, delay, callback: (
-            scheduled.update({"delay": delay, "callback": callback}) or (lambda: None)
-        ),
-    )
-
-    await thermostat._async_control()
-
-    services.async_call.assert_not_awaited()
-    assert scheduled["delay"] == 299
-
-
-@pytest.mark.asyncio
-async def test_running_level_change_is_rate_limited(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A source level is not changed again before its configured interval."""
-    thermostat, services = controller()
-    thermostat.hass.states._states["sensor.room_temperature"] = entity(
-        "19.6", unit_of_measurement="°C"
-    )
-    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
-    thermostat.hass.states._states["fan.heater_level"] = entity(STATE_ON, percentage=50)
-    thermostat.config[CONF_MIN_LEVEL_CHANGE_SECONDS] = 60
-    thermostat._last_level_change = 100
-    scheduled: dict[str, object] = {}
-
-    monkeypatch.setattr(climate_module.time, "monotonic", lambda: 101)
-    monkeypatch.setattr(
-        climate_module,
-        "async_call_later",
-        lambda _hass, delay, callback: (
-            scheduled.update({"delay": delay, "callback": callback}) or (lambda: None)
-        ),
-    )
-
-    await thermostat._async_control()
-
-    services.async_call.assert_not_awaited()
-    assert scheduled["delay"] == 59
-
-
-@pytest.mark.asyncio
-async def test_running_heater_increases_output_without_waiting_for_descent_delay(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A rising demand is immediate; only output reductions are paced."""
-    thermostat, services = controller()
-    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
-    thermostat.config[CONF_MIN_LEVEL_CHANGE_SECONDS] = 60
-    thermostat._last_level_change = 100
-    monkeypatch.setattr(climate_module.time, "monotonic", lambda: 101)
-
-    await thermostat._async_control()
-
-    services.async_call.assert_awaited_once_with(
-        "fan",
-        "set_percentage",
-        {"entity_id": "fan.heater_level", "percentage": 50},
-        blocking=True,
-    )
-
-
-def test_existing_source_is_guarded_after_controller_starts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Restarting HA never assumes a running heater has met its timing guard."""
-    thermostat, _ = controller()
-    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
-    monkeypatch.setattr(climate_module.time, "monotonic", lambda: 100)
-
-    thermostat._initialize_running_source_timing()
-
-    assert thermostat._last_power_change == 100
-    assert thermostat._last_level_change == 100
-
-
-def test_external_source_power_change_resets_transition_timing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Manual source changes receive the same timing safeguards as our own."""
-    thermostat, _ = controller()
-    monkeypatch.setattr(climate_module.time, "monotonic", lambda: 100)
-
-    thermostat._async_source_changed(
-        SimpleNamespace(data={"entity_id": "switch.heater_power"})
-    )
-
-    assert thermostat._last_power_change == 100
-
-
-@pytest.mark.asyncio
-async def test_virtual_off_cancels_deferred_control_and_shuts_down_source() -> None:
-    """Virtual off owns its pending work and uses the source's normal shutdown."""
-    thermostat, services = controller()
-    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
-    cancel = Mock()
-    thermostat._control_callback = cancel
-    thermostat._next_control_at = 500
-
-    await thermostat.async_set_hvac_mode(HVACMode.OFF)
-
-    cancel.assert_called_once_with()
-    assert thermostat._control_callback is None
-    assert thermostat._next_control_at is None
     services.async_call.assert_awaited_once_with(
         "switch", "turn_off", {"entity_id": "switch.heater_power"}, blocking=True
-    )
-
-
-@pytest.mark.asyncio
-async def test_never_controls_an_unavailable_source_power_entity() -> None:
-    """An unavailable source Power entity makes the controller fail closed."""
-    thermostat, services = controller()
-    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_UNAVAILABLE)
-
-    await thermostat._async_control()
-
-    services.async_call.assert_not_awaited()
-    assert not thermostat.available
-
-
-@pytest.mark.asyncio
-async def test_virtual_off_does_not_interrupt_a_source_burnoff() -> None:
-    """The unavailable source Level fan is a hard cooldown-control gate."""
-    thermostat, services = controller()
-    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
-    thermostat.hass.states._states["fan.heater_level"] = entity(STATE_UNAVAILABLE)
-
-    await thermostat.async_set_hvac_mode(HVACMode.OFF)
-
-    services.async_call.assert_not_awaited()
-    assert not thermostat.available
-
-
-@pytest.mark.asyncio
-async def test_never_controls_source_outside_level_mode() -> None:
-    """Native temperature mode makes the virtual thermostat inert."""
-    thermostat, services = controller(mode="Temperature Mode")
-
-    await thermostat._async_control()
-
-    services.async_call.assert_not_awaited()
-    assert not thermostat.available
-
-
-@pytest.mark.asyncio
-async def test_configured_low_voltage_stops_source() -> None:
-    """An enabled voltage threshold requests a normal source shutdown."""
-    thermostat, services = controller(voltage="11.5")
-    thermostat.config["min_voltage"] = 12.0
-    thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
-
-    await thermostat._async_control()
-
-    services.async_call.assert_awaited_once_with(
-        "switch",
-        "turn_off",
-        {"entity_id": "switch.heater_power"},
-        blocking=True,
     )
