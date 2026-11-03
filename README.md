@@ -156,5 +156,3 @@ ruff check .
 ruff format --check .
 python -m compileall custom_components tests
 ```
-
-Release packaging details are in the [release asset check documentation](docs/release-asset-check.md).
