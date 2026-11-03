@@ -280,6 +280,8 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         """Coalesce state bursts without adding a timer or delaying control."""
         if self._removed:
             return
+        if self._is_source_on():
+            self._power_on_pending = False
         self.async_write_ha_state()
         self._control_dirty = True
         if self._event_task is None or self._event_task.done():
@@ -373,6 +375,9 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
                 snapshot = (temperature, self._target_temperature)
                 await self._set_source_level(demand_level)
                 if self._removed or self._hvac_mode != HVACMode.HEAT:
+                    return
+                mode = self.hass.states.get(self.config[CONF_RUNNING_MODE])
+                if not mode or not self._is_level_mode(mode.state):
                     return
                 if self._safety_blocked() or self.current_temperature is None:
                     await self._turn_source_off("feedback changed during control")

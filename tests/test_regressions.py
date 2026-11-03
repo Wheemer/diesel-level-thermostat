@@ -428,3 +428,98 @@ async def test_queued_off_does_not_write_state_after_removal():
     await asyncio.gather(control, off, return_exceptions=True)
     await h.async_set_temperature(temperature=22)
     assert not any(writes)
+
+
+async def test_mode_change_during_level_write_cannot_trigger_automatic_off():
+    h, services = controller()
+    h.hass.states._states["switch.heater_power"] = entity("on")
+    h.config["fault_sensor"] = "binary_sensor.fault"
+    h.hass.states._states["binary_sensor.fault"] = entity("off")
+
+    async def service(domain, action, data, blocking):
+        if domain == "fan":
+            h.hass.states._states["select.heater_mode"] = entity("Temperature Mode")
+            h.hass.states._states["binary_sensor.fault"] = entity("on")
+
+    services.async_call.side_effect = service
+    await h._async_control()
+    assert [call.args[:2] for call in services.async_call.await_args_list] == [
+        ("fan", "set_percentage")
+    ]
+
+
+async def test_confirmed_on_clears_start_pending_while_native_mode_is_selected():
+    h, services = controller(mode="Temperature Mode")
+    h._power_on_pending = True
+    h.hass.async_create_task = asyncio.create_task
+    h.hass.states._states["switch.heater_power"] = entity("on")
+    h._async_source_changed(None)
+    await h._event_task
+    assert not h._power_on_pending
+    services.async_call.assert_not_awaited()
+    h.hass.states._states["switch.heater_power"] = entity("off")
+    h.hass.states._states["select.heater_mode"] = entity("Level Mode")
+    await h._async_control()
+    assert sum(call.args[1] == "turn_on" for call in services.async_call.await_args_list) == 1
+
+
+@pytest.mark.parametrize("count", [6, 10])
+@pytest.mark.parametrize("unit", ["°C", "°F"])
+async def test_full_temperature_trace_levels_shutdown_restart_and_explicit_off(count, unit):
+    from homeassistant.util.percentage import (
+        ordered_list_item_to_percentage,
+        percentage_to_ordered_list_item,
+    )
+    from homeassistant.util.unit_conversion import TemperatureConverter
+
+    h, services = controller()
+    h._attr_temperature_unit = unit
+    h.hass.config.units.temperature_unit = unit
+    h._target_temperature = TemperatureConverter.convert(20, "°C", unit)
+    h.hass.states._states["fan.heater_level"] = entity(
+        "off", percentage=0, percentage_step=100 / count
+    )
+    levels = [str(i) for i in range(1, count + 1)]
+
+    async def service(domain, action, data, blocking):
+        if domain == "fan":
+            actual = percentage_to_ordered_list_item(levels, data["percentage"])
+            h.hass.states._states["fan.heater_level"] = entity(
+                "on",
+                percentage=ordered_list_item_to_percentage(levels, actual),
+                percentage_step=100 / count,
+            )
+        else:
+            h.hass.states._states["switch.heater_power"] = entity(
+                "on" if action == "turn_on" else "off"
+            )
+
+    services.async_call.side_effect = service
+
+    def room(celsius):
+        h.hass.states._states["sensor.room_temperature"] = entity(
+            str(TemperatureConverter.convert(celsius, "°C", unit)), unit_of_measurement=unit
+        )
+
+    room(0)
+    await h._async_control()
+    assert h._source_level() == count and h._is_source_on()
+    room(19.8)
+    await h._async_control()
+    assert h._source_level() == 1 and h._is_source_on()
+    room(20)
+    await h._async_control()
+    assert not h._is_source_on()
+    room(21)
+    before = services.async_call.await_count
+    await h._async_control()
+    assert services.async_call.await_count == before
+    room(19.9)
+    await h._async_control()
+    assert h._source_level() == 1 and h._is_source_on()
+    await h.async_turn_off()
+    assert not h._is_source_on()
+    room(0)
+    before = services.async_call.await_count
+    await h._async_control()
+    assert services.async_call.await_count == before
