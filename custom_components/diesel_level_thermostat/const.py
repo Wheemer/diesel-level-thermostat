@@ -27,8 +27,6 @@ LEVEL_MODE_VALUES: Final = frozenset({"Level", "Level Mode"})
 DEFAULT_MIN_LEVEL: Final = 1
 DEFAULT_MAX_LEVEL: Final = 10
 DEFAULT_PROPORTIONAL_BAND: Final = 5.0
-# Re-evaluate an active heating cycle even if the source emits no state event.
-CONTROL_RECHECK_SECONDS: Final = 60
 DISABLED_THRESHOLD: Final = 0.0
 
 OPTIONAL_ENTITY_KEYS: Final = (
@@ -37,3 +35,5 @@ OPTIONAL_ENTITY_KEYS: Final = (
     CONF_CASE_TEMPERATURE,
     CONF_EXHAUST_TEMPERATURE,
 )
+
+CONF_ENTITY_REGISTRY_IDS: Final = "entity_registry_ids"

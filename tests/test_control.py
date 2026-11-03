@@ -38,5 +38,5 @@ def test_target_level_selects_an_intermediate_level() -> None:
             max_level=10,
             proportional_band=5,
         )
-        == 5
+        == 4
     )

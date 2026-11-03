@@ -16,11 +16,18 @@ def target_level(
     """Map a positive temperature gap to a discrete heater level."""
     if min_level < 1 or max_level < min_level:
         raise ValueError("Invalid level range")
+    if not all(
+        math.isfinite(value)
+        for value in (current_temperature, target_temperature, proportional_band)
+    ):
+        raise ValueError("Temperatures and proportional band must be finite")
     if proportional_band <= 0:
         raise ValueError("Proportional band must be positive")
     error = target_temperature - current_temperature
     if error <= 0:
         return min_level
-    span = max_level - min_level
-    scaled = math.ceil((error / proportional_band) * span - 1e-9)
-    return min(max_level, max(min_level, min_level + scaled))
+    if error >= proportional_band:
+        return max_level
+    steps = max_level - min_level + 1
+    scaled = math.ceil((error / proportional_band) * steps - 1e-9)
+    return min(max_level, max(min_level, min_level + scaled - 1))

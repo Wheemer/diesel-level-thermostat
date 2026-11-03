@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Build the HACS release ZIP from an exact Git tag without publishing it."""
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ def fail(message: str) -> None:
 
 
 def release_version(tag: str) -> str:
-    return tag[1:] if tag.startswith("v") else tag
+    return tag.removeprefix("v")
 
 
 def main() -> None:
@@ -27,7 +26,11 @@ def main() -> None:
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parents[1]
-    hacs = json.loads((root / "hacs.json").read_text(encoding="utf-8"))
+    hacs = json.loads(
+        subprocess.run(
+            ["git", "show", f"{args.tag}:hacs.json"], cwd=root, capture_output=True, check=True
+        ).stdout
+    )
     component_path = "custom_components/diesel_level_thermostat"
     manifest_path = f"{component_path}/manifest.json"
     expected_name = hacs["filename"]
@@ -38,17 +41,21 @@ def main() -> None:
     tag_manifest = subprocess.run(
         ["git", "show", f"{args.tag}:{manifest_path}"],
         cwd=root,
+        check=False,
         capture_output=True,
         text=True,
     )
     if tag_manifest.returncode:
         fail(f"cannot read {manifest_path} from {args.tag}: {tag_manifest.stderr.strip()}")
-    if json.loads(tag_manifest.stdout).get("version") != release_version(args.tag):
+    if args.tag.startswith("v") and json.loads(tag_manifest.stdout).get(
+        "version"
+    ) != release_version(args.tag):
         fail(f"{args.tag} does not match the manifest version")
 
     files = subprocess.run(
         ["git", "ls-tree", "-r", "--name-only", args.tag, "--", component_path],
         cwd=root,
+        check=False,
         capture_output=True,
         text=True,
     )
@@ -62,6 +69,7 @@ def main() -> None:
             content = subprocess.run(
                 ["git", "show", f"{args.tag}:{source_path}"],
                 cwd=root,
+                check=False,
                 capture_output=True,
             )
             if content.returncode:
@@ -69,8 +77,14 @@ def main() -> None:
             archive.writestr(relative_path, content.stdout)
 
     verify = subprocess.run(
-        [sys.executable, str(root / "scripts" / "verify_hacs_release_asset.py"), args.tag, str(args.output)],
+        [
+            sys.executable,
+            str(root / "scripts" / "verify_hacs_release_asset.py"),
+            args.tag,
+            str(args.output),
+        ],
         cwd=root,
+        check=False,
     )
     if verify.returncode:
         raise SystemExit(verify.returncode)

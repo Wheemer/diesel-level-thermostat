@@ -30,9 +30,9 @@ integration; it does not communicate with the heater over BLE itself.
 
 | Capability | Behavior |
 |---|---|
-| **Level-mode climate control** | Calculates a ten-step heating level from the selected room-temperature feedback. |
+| **Level-mode climate control** | Calculates a heating level using the source fan’s supported speed steps. |
 | **Corrected feedback** | Uses any Home Assistant temperature sensor and an optional local Celsius offset. |
-| **Stable control** | Starts at the calculated demand, then steps down gradually as the room approaches target. |
+| **Stable control** | Selects the calculated demand directly and reduces it as the room approaches target. |
 | **Safety gates** | Stops only through the heater’s normal Power entity and honors configured fault, voltage, and thermal limits. |
 | **No protocol assumptions** | Binds to Diesel Heater’s public entities, not a hard-coded brand or Bluetooth protocol. |
 
@@ -42,17 +42,19 @@ The setup flow binds to an existing Diesel Heater device rather than talking to 
 
 - required: room temperature, power switch, heater-level fan, and running-mode
   entity;
-- optional safety inputs: a fault binary sensor, supply voltage, case
-  temperature, and an outlet/exhaust temperature sensor when the selected
-  controller exposes one.
+- an automatically detected fault binary sensor, when provided by the source;
+- physical telemetry attributes, including supply voltage, case temperature,
+  and supported probes. Existing saved thermal/voltage limits are preserved;
+  new setup does not add numerical safety tuning controls.
 
 The first setup step chooses the **Diesel Heater** device. The integration then
 derives its Power, Heater Level, Running Mode, interior temperature, fault,
 supply voltage, case temperature, and any supported intake/outlet probe from
 that device. The room-temperature field defaults to the heater's interior
 sensor but can be changed to an external room sensor. The same selector and a
-local Celsius offset remain editable from Options. Controls from different
-heaters cannot be mixed. Physical telemetry is published in the climate
+local Celsius offset remain editable from Options. Options changes reload the controller so the selected feedback takes effect.
+Stable entity-registry references preserve selected sensors across renames.
+Controls from different heaters cannot be mixed. Physical telemetry is published in the climate
 attributes; integration-local fuel and runtime estimates are excluded because
 they are not hardware measurements and never affect control.
 
@@ -68,15 +70,15 @@ temperature regulation. It remains visible through the source integration.
 ## Controller Coverage
 
 This thermostat supports every source heater that exposes the public Level-Mode
-contract: a Power switch, a ten-step Heater Level fan, and a Running Mode
+contract: a Power switch, a discrete Heater Level fan, and a Running Mode
 select on one device. The setup is telemetry-aware rather than
 protocol-hardcoded, so it follows the actual entities exposed by each
-controller. That covers the established AA55/AA66, ABBA/HeaterCC,
+controller, including six-step ABBA and ten-step source fans. That covers the established AA55/AA66, ABBA/HeaterCC,
 CBFF/Sunster, Hcalory MVP, and HeatGenie/Boygu air-heater families when their
 source entities expose that contract.
 
 Webasto Cronus and DZ06 Neo are intentionally not selectable for staged-level
-control: they do not expose the same ten-step Heater Level contract. Use a
+control: they do not expose this Heater Level contract. Use a
 Diesel Heater release that hides the Heater Level fan for those controllers;
 older source releases can expose a legacy fan entity that is not safe for this
 thermostat to drive. Water controllers are likewise excluded because a
@@ -84,24 +86,32 @@ room-air level loop would be the wrong control model.
 
 ## Control Policy
 
-While heating is requested, the controller maps the temperature error into a
-discrete level between the configured minimum and maximum. It selects the
-calculated level immediately when starting or when demand increases, then
-steps a running heater down one level at a time as demand falls. One configured
-room temperature is the feedback input; it is never averaged with case, intake,
-outlet, or exhaust probes because they measure different physical locations.
+While Heat is selected and the heater is in Level Mode, the controller compares
+one room-temperature feedback sensor with the selected target. Below target,
+it selects a level directly from the temperature gap using a fixed 5°C
+proportional band and the source fan's actual speed count. A gap at or above
+5°C selects maximum output; a small positive gap selects level 1. All control
+math uses Celsius, including on Fahrenheit installations.
 
-The controller uses one room-temperature feedback source. Below the selected
-target it directly chooses a level from the current temperature gap; at or above
-the target it requests the heater's normal Power-off command. It does not add
-hold timers, overshoot bands, periodic control timers, or heater calibration
-controls.
+At or above target it requests the source's normal Power-off command. Increasing
+or decreasing demand selects the newly calculated level immediately. There is
+no one-step ramp, hold timer, overshoot band, periodic control timer, or native
+heater calibration write. The only feedback options are the room sensor and
+its local Celsius offset. Case, intake, outlet and exhaust probes are not
+averaged into room temperature.
 
-The controller never writes the heater's native temperature mode.
+Control is suspended outside Level Mode. A source-owned burn-off remains in
+charge while its level entity is unavailable. Explicit virtual Off requests
+normal shutdown; it does not cut electrical power. Missing or invalid room
+feedback also requests normal shutdown when Level-mode ownership and the
+source's shutdown gate permit it.
 
-The defaults are conservative starting points, not universal combustion
-settings. Tune them for the installed heater and room. This integration is not
-a replacement for the heater's firmware safety systems.
+The virtual Heat/Off state and target are restored after a restart, with the
+target's unit preserved. An invalid or unresolvable out-of-range legacy target
+leaves virtual heating Off. Pending controller tasks are cancelled on unload.
+
+The source integration and heater firmware remain responsible for combustion,
+altitude compensation, cooldown and hardware protections.
 
 ## Install
 
@@ -117,7 +127,7 @@ a replacement for the heater's firmware safety systems.
 4. Choose the room-temperature sensor and, if needed, a local correction.
    These two feedback settings remain available in Options.
 5. Put the heater in **Level Mode**, then use the new climate entity and adjust
-   the controller options as needed.
+   the room-feedback options as needed.
 
 Do not run the virtual thermostat while the heater is in its native Temperature
 Mode. The virtual climate entity is intentionally unavailable in that mode.
@@ -131,7 +141,9 @@ automation.
 
 ## Development
 
-Run the focused controller test suite from the repository root:
+Development and CI use Python 3.14 and Home Assistant 2026.10.4. Install the
+pinned test tools with `python -m pip install -r requirements-test.txt`.
+Run the controller, lifecycle, configuration and release-asset tests from the repository root:
 
 ```bash
 python -m pytest tests
@@ -152,4 +164,9 @@ This integration uses a HACS ZIP release asset. Before publishing a release, bui
 python3 scripts/build_hacs_release_asset.py vX.Y.Z dist/diesel-level-thermostat.zip
 ```
 
-Attach that generated ZIP when creating the GitHub release. The release workflow also verifies that the published release contains a downloadable asset with the name declared in `hacs.json`.
+Attach that generated ZIP when creating the GitHub release. Do not publish a
+release before its validated ZIP is attached. The verifier checks all runtime
+files, parses Python, decodes all eight transparent brand images, and compares
+every byte with the exact Git ref. CI also builds an unpublished preview from
+`HEAD`. The release workflow checks that the published asset is downloadable
+and still matches the release tag. It never creates or publishes a release.

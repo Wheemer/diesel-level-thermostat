@@ -1,5 +1,6 @@
 """Behavior tests for the direct staged climate controller."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -65,9 +66,7 @@ def controller(*, mode: str = "Level Mode", voltage: str | None = None):
         states=FakeStates(states),
         services=services,
         async_create_task=lambda task: task.close(),
-        config=SimpleNamespace(
-            units=SimpleNamespace(temperature_unit=UnitOfTemperature.CELSIUS)
-        ),
+        config=SimpleNamespace(units=SimpleNamespace(temperature_unit=UnitOfTemperature.CELSIUS)),
     )
     entry = SimpleNamespace(entry_id="test", title="Test Heater", data=data, options={})
     thermostat = DieselLevelThermostat(hass, entry)
@@ -108,7 +107,7 @@ async def test_starts_at_level_from_current_temperature_gap() -> None:
     thermostat, services = controller()
     await thermostat._async_control()
     assert services.async_call.await_args_list[0].args[:2] == ("fan", "set_percentage")
-    assert services.async_call.await_args_list[0].args[2]["percentage"] == 50
+    assert services.async_call.await_args_list[0].args[2]["percentage"] == 40
     assert services.async_call.await_args_list[1].args[:2] == ("switch", "turn_on")
 
 
@@ -136,7 +135,7 @@ async def test_running_heater_directly_reduces_level_as_room_warms() -> None:
     services.async_call.assert_awaited_once_with(
         "fan",
         "set_percentage",
-        {"entity_id": "fan.heater_level", "percentage": 20},
+        {"entity_id": "fan.heater_level", "percentage": 10},
         blocking=True,
     )
 
@@ -187,7 +186,13 @@ async def test_level_mode_transition_shuts_down_when_already_above_target() -> N
     thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
     thermostat.hass.states._states["select.heater_mode"] = entity("Level Mode")
     scheduled: list[object] = []
-    thermostat.hass.async_create_task = scheduled.append
+
+    def create_task(coro):
+        task = asyncio.create_task(coro)
+        scheduled.append(task)
+        return task
+
+    thermostat.hass.async_create_task = create_task
 
     thermostat._async_source_changed(MagicMock())
 

@@ -25,20 +25,11 @@ def test_source_device_requires_all_control_entities_on_one_device() -> None:
         "custom_components.diesel_level_thermostat.source.er.async_get",
         return_value=registry,
     ):
+        assert source_device_id(object(), ("switch.power", "fan.level", "select.mode")) == "heater"
         assert (
-            source_device_id(object(), ("switch.power", "fan.level", "select.mode"))
-            == "heater"
+            source_device_id(object(), ("switch.power", "fan.level", "select.other_mode")) is None
         )
-        assert (
-            source_device_id(
-                object(), ("switch.power", "fan.level", "select.other_mode")
-            )
-            is None
-        )
-        assert (
-            source_device_id(object(), ("switch.power", "fan.level", "select.missing"))
-            is None
-        )
+        assert source_device_id(object(), ("switch.power", "fan.level", "select.missing")) is None
 
 
 def test_source_telemetry_excludes_local_estimates() -> None:
@@ -46,19 +37,29 @@ def test_source_telemetry_excludes_local_estimates() -> None:
     registry = object()
     entries = (
         SimpleNamespace(
-            entity_id="sensor.diesel_heater_interior_temperature", domain="sensor"
+            entity_id="sensor.diesel_heater_interior_temperature",
+            domain="sensor",
+            unique_id="device_interior_temperature",
         ),
         SimpleNamespace(
-            entity_id="sensor.diesel_heater_case_temperature", domain="sensor"
+            entity_id="sensor.diesel_heater_case_temperature",
+            domain="sensor",
+            unique_id="device_case_temperature",
         ),
         SimpleNamespace(
-            entity_id="sensor.diesel_heater_estimated_fuel_remaining", domain="sensor"
+            entity_id="sensor.diesel_heater_estimated_fuel_remaining",
+            domain="sensor",
+            unique_id="device_estimated_fuel_remaining",
         ),
         SimpleNamespace(
-            entity_id="sensor.diesel_heater_total_runtime", domain="sensor"
+            entity_id="sensor.diesel_heater_total_runtime",
+            domain="sensor",
+            unique_id="device_total_runtime",
         ),
         SimpleNamespace(
-            entity_id="binary_sensor.diesel_heater_problem", domain="binary_sensor"
+            entity_id="binary_sensor.diesel_heater_problem",
+            domain="binary_sensor",
+            unique_id="device_problem",
         ),
     )
     with (
@@ -115,9 +116,7 @@ def test_source_control_entities_require_the_level_mode_contract() -> None:
         }
 
 
-def test_source_control_entities_reject_cronus_style_devices_without_a_level_fan() -> (
-    None
-):
+def test_source_control_entities_reject_cronus_style_devices_without_a_level_fan() -> None:
     """Cronus air and water devices do not expose the staged-control contract."""
     registry = object()
     entries = (
@@ -149,20 +148,14 @@ def test_source_telemetry_defaults_follow_available_heater_probes() -> None:
     """Heater telemetry is populated from supported source entities."""
     registry = object()
     entries = (
-        SimpleNamespace(
-            entity_id="sensor.interior", domain="sensor", unique_id="aa_cab_temp"
-        ),
-        SimpleNamespace(
-            entity_id="sensor.case", domain="sensor", unique_id="aa_case_temp"
-        ),
+        SimpleNamespace(entity_id="sensor.interior", domain="sensor", unique_id="aa_cab_temp"),
+        SimpleNamespace(entity_id="sensor.case", domain="sensor", unique_id="aa_case_temp"),
         SimpleNamespace(
             entity_id="sensor.outlet",
             domain="sensor",
             unique_id="aa_outlet_temperature",
         ),
-        SimpleNamespace(
-            entity_id="sensor.voltage", domain="sensor", unique_id="aa_supply_voltage"
-        ),
+        SimpleNamespace(entity_id="sensor.voltage", domain="sensor", unique_id="aa_supply_voltage"),
         SimpleNamespace(
             entity_id="binary_sensor.problem",
             domain="binary_sensor",

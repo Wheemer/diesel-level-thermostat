@@ -9,10 +9,15 @@ from homeassistant.helpers import entity_registry as er
 
 from .const import (
     CONF_CASE_TEMPERATURE,
+    CONF_ENTITY_REGISTRY_IDS,
     CONF_EXHAUST_TEMPERATURE,
     CONF_FAULT_SENSOR,
+    CONF_HEATER_LEVEL,
+    CONF_HEATER_POWER,
     CONF_ROOM_TEMPERATURE,
+    CONF_RUNNING_MODE,
     CONF_VOLTAGE_SENSOR,
+    OPTIONAL_ENTITY_KEYS,
 )
 
 # These are integration-local counters and estimates, not controller telemetry.
@@ -42,23 +47,17 @@ _TELEMETRY_ENTITY_SUFFIXES = {
 }
 
 
-def source_device_id(
-    hass: HomeAssistant, control_entity_ids: Iterable[str]
-) -> str | None:
+def source_device_id(hass: HomeAssistant, control_entity_ids: Iterable[str]) -> str | None:
     """Return the common source device for the selected control entities."""
     registry = er.async_get(hass)
     entries = [registry.async_get(entity_id) for entity_id in control_entity_ids]
-    if not entries or any(
-        entry is None or entry.device_id is None for entry in entries
-    ):
+    if not entries or any(entry is None or entry.device_id is None for entry in entries):
         return None
     device_ids = {entry.device_id for entry in entries}
     return next(iter(device_ids)) if len(device_ids) == 1 else None
 
 
-def source_telemetry_entity_ids(
-    hass: HomeAssistant, device_id: str | None
-) -> tuple[str, ...]:
+def source_telemetry_entity_ids(hass: HomeAssistant, device_id: str | None) -> tuple[str, ...]:
     """Return physical sensor entities belonging to the selected source device."""
     if not device_id:
         return ()
@@ -67,13 +66,13 @@ def source_telemetry_entity_ids(
         entry.entity_id
         for entry in er.async_entries_for_device(registry, device_id)
         if entry.domain in {"sensor", "binary_sensor"}
-        and not any(part in entry.entity_id for part in _ESTIMATE_ENTITY_PARTS)
+        and getattr(entry, "platform", "diesel_heater") == "diesel_heater"
+        and not getattr(entry, "disabled_by", None)
+        and not any(part in entry.unique_id for part in _ESTIMATE_ENTITY_PARTS)
     )
 
 
-def source_control_entity_ids(
-    hass: HomeAssistant, device_id: str
-) -> dict[str, str] | None:
+def source_control_entity_ids(hass: HomeAssistant, device_id: str) -> dict[str, str] | None:
     """Resolve the source integration's public Level-Mode control contract."""
     registry = er.async_get(hass)
     entries = er.async_entries_for_device(registry, device_id)
@@ -82,7 +81,10 @@ def source_control_entity_ids(
         matches = [
             entry.entity_id
             for entry in entries
-            if entry.domain == domain and entry.unique_id.endswith(suffix)
+            if entry.domain == domain
+            and entry.unique_id.endswith(suffix)
+            and getattr(entry, "platform", "diesel_heater") == "diesel_heater"
+            and not getattr(entry, "disabled_by", None)
         ]
         if len(matches) != 1:
             return None
@@ -100,9 +102,45 @@ def source_telemetry_defaults(hass: HomeAssistant, device_id: str) -> dict[str, 
             matches = [
                 entry.entity_id
                 for entry in entries
-                if entry.domain == domain and entry.unique_id.endswith(suffix)
+                if entry.domain == domain
+                and entry.unique_id.endswith(suffix)
+                and getattr(entry, "platform", "diesel_heater") == "diesel_heater"
+                and not getattr(entry, "disabled_by", None)
             ]
             if len(matches) == 1:
                 defaults[key] = matches[0]
                 break
     return defaults
+
+
+ENTITY_KEYS = (
+    CONF_HEATER_POWER,
+    CONF_HEATER_LEVEL,
+    CONF_RUNNING_MODE,
+    CONF_ROOM_TEMPERATURE,
+    *OPTIONAL_ENTITY_KEYS,
+)
+
+
+def entity_registry_ids(hass: HomeAssistant, config: dict) -> dict[str, str]:
+    """Persist registry identity so selected sensors survive entity-ID renames."""
+    registry = er.async_get(hass)
+    result = dict(config.get(CONF_ENTITY_REGISTRY_IDS, {}))
+    for key in ENTITY_KEYS:
+        entry = registry.async_get(config.get(key, ""))
+        if entry is not None:
+            result[key] = entry.id
+        else:
+            result.pop(key, None)
+    return result
+
+
+def resolve_entity_references(hass: HomeAssistant, config: dict) -> dict[str, str]:
+    """Resolve stable references before setting up listeners or issuing controls."""
+    registry = er.async_get(hass)
+    by_id = {entry.id: entry.entity_id for entry in registry.entities.values()}
+    result = {}
+    for key, registry_id in config.get(CONF_ENTITY_REGISTRY_IDS, {}).items():
+        if key in ENTITY_KEYS and registry_id in by_id:
+            result[key] = by_id[registry_id]
+    return result

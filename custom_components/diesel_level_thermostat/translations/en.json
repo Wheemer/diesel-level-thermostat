@@ -9,18 +9,24 @@
         }
       },
       "telemetry": {
-        "title": "Temperature and safety",
-        "description": "The heater's physical safety telemetry is detected automatically. Choose the temperature used for room control.",
+        "title": "Room feedback",
+        "description": "Choose the temperature used for room control. The source fault sensor and other physical telemetry are detected automatically when available.",
         "data": {
           "name": "Name",
           "room_temperature": "Room temperature",
           "room_temperature_offset": "Room temperature offset (C)"
+        },
+        "data_description": {
+          "room_temperature": "The temperature used to decide when to start, stop, and adjust the heater level.",
+          "room_temperature_offset": "A local correction in Celsius applied only by this thermostat. Use a negative value when the selected sensor reads too high."
         }
       }
     },
     "error": {
       "already_configured": "This heater is already configured.",
-      "unsupported_source_device": "This device does not expose the required Power, Heater Level, and Running Mode entities."
+      "unsupported_source_device": "This device does not expose the required Power, Heater Level, and Running Mode entities.",
+      "invalid_offset": "Enter a finite offset between -20 and 20 Celsius.",
+      "invalid_sensor": "Choose a temperature sensor."
     },
     "abort": {
       "already_configured": "This heater is already configured."
@@ -41,6 +47,9 @@
         }
       }
     },
-    "error": {}
+    "error": {
+      "invalid_offset": "Enter a finite offset between -20 and 20 Celsius.",
+      "invalid_sensor": "Choose a temperature sensor."
+    }
   }
 }
