@@ -13,7 +13,7 @@
 [![Downloads](https://img.shields.io/github/downloads/Wheemer/diesel-level-thermostat/total?style=for-the-badge&logo=github&logoColor=white&label=DOWNLOADS&labelColor=555555&color=8A2BE2)](https://github.com/Wheemer/diesel-level-thermostat/releases)
 [![Climate platform](https://img.shields.io/badge/PLATFORM-CLIMATE-22C55E?style=for-the-badge&logo=home-assistant&logoColor=white&labelColor=555555)](https://www.home-assistant.io/integrations/climate/)
 
-[Install](#install) • [What It Does](#what-it-does) • [Controller Coverage](#controller-coverage) • [Control Policy](#control-policy) • [Safety](#safety) • [Development](#development)
+[Install](#install) • [What It Does](#what-it-does) • [Controller Coverage](#controller-coverage) • [Control Policy](#control-policy) • [Safety](#safety) • [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -139,20 +139,4 @@ entity rather than cutting mains/DC supply. Verify normal startup, shutdown,
 burn-off, and fault behavior with the heater attended before relying on an
 automation.
 
-## Development
-
-Development and CI use Python 3.14 and Home Assistant 2026.10.4. Install the
-pinned test tools with `python -m pip install -r requirements-test.txt`.
-Run the controller, lifecycle, configuration and release-asset tests from the repository root:
-
-```bash
-python -m pytest tests
-```
-
-Run static checks before a release:
-
-```bash
-ruff check .
-ruff format --check .
-python -m compileall custom_components tests
-```
+For development information, see [CONTRIBUTING.md](CONTRIBUTING.md).
