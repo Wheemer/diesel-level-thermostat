@@ -19,6 +19,9 @@ from scripts.verify_hacs_release_asset import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+VERSION = json.loads(
+    (ROOT / "custom_components/diesel_level_thermostat/manifest.json").read_text()
+)["version"]
 
 
 def files():
@@ -43,7 +46,7 @@ def verify(asset, expected=None):
         asset,
         filename=asset.name,
         domain="diesel_level_thermostat",
-        version="0.2.10",
+        version=VERSION,
         expected_files=expected,
     )
 
@@ -117,13 +120,13 @@ def test_builder_uses_tag_metadata_even_when_working_hacs_changes(tmp_path):
         shutil.copyfile(ROOT / "scripts" / name, root / "scripts" / name)
     git("add", ".")
     git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture")
-    git("tag", "v0.2.10")
+    git("tag", f"v{VERSION}")
     (root / "hacs.json").write_text(json.dumps({"filename": "different.zip"}))
     result = subprocess.run(
         [
             sys.executable,
             str(root / "scripts/build_hacs_release_asset.py"),
-            "v0.2.10",
+            f"v{VERSION}",
             str(root / "dist/diesel-level-thermostat.zip"),
         ],
         capture_output=True,
