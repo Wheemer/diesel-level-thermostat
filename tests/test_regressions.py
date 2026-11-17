@@ -264,11 +264,20 @@ async def test_one_actual_ha_temperature_event_schedules_one_control(tmp_path):
             return_value="source",
         ),
         patch(
+            "custom_components.diesel_level_thermostat.climate.source_control_contract",
+            return_value=(
+                {"heater_power": "switch.heater_power", "running_mode": "select.heater_mode"},
+                ("fan.heater_level",),
+                (),
+            ),
+        ),
+        patch(
             "custom_components.diesel_level_thermostat.climate.source_telemetry_entity_ids",
             return_value=("sensor.room_temperature",),
         ),
     ):
         await h.async_added_to_hass()
+    h._source_device_id = None  # This test isolates event coalescing, not registry discovery.
     h._async_control.reset_mock()
     h.hass.states.async_set("sensor.room_temperature", "18", {"unit_of_measurement": "°C"})
     await h.hass.async_block_till_done()

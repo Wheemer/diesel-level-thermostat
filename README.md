@@ -72,7 +72,11 @@ temperature regulation. It remains visible through the source integration.
 This thermostat supports every source heater that exposes the public Level-Mode
 contract: a Power switch, a Running Mode select with Level mode, and either a discrete
 Heater Level fan or an enabled Level number on the same device. The fan is
-preferred during setup; a valid existing number binding is preserved on reload. The setup is telemetry-aware rather than
+preferred when both controls are usable during setup. An existing usable binding is
+preserved on reload. If the selected control is unavailable or invalid, the thermostat
+can use the other enabled control only when it belongs to the same heater, config
+entry, and controller identity and passes its own availability and level checks.
+The selected backend stays in use while it remains valid. The setup is telemetry-aware rather than
 protocol-hardcoded, so it follows the actual entities exposed by each
 controller, including six-step ABBA and ten-step source fans. That covers the established AA55/AA66, ABBA/HeaterCC,
 CBFF/Sunster, Hcalory MVP, and HeatGenie/Boygu air-heater families when their
@@ -94,9 +98,12 @@ Disabled controls are not silently enabled. Orphan registry rows are ignored,
 but genuinely ambiguous active controls require correction. If a configured
 source loses its required controls, setup reports the missing/disabled source
 rather than retaining unvalidated bindings. The thermostat's attributes include
-`unavailable_reason` and the selected source entity IDs so a missing input is
+`unavailable_reason`, both candidate states, and the selected source entity IDs so a missing input is
 visible without guessing. Source-owned burn-off unavailability remains a hard
-gate; the thermostat does not switch control backends to bypass it. Saved feedback identities are never silently
+gate. An enabled source Burn-off Active sensor also blocks control while active or
+unavailable, even if a level entity has stale available state. Backend selection
+never bypasses these protections. Both unavailable level controls leave the
+thermostat unavailable; it sends no level or startup command. Saved feedback identities are never silently
 replaced by another entity reusing the old name. If a selected sensor was deleted,
 open the integration's options and explicitly select its replacement. Safety-input repair fields
 appear there only when a saved identity no longer resolves; their limits are preserved.

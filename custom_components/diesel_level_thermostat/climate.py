@@ -49,7 +49,6 @@ from .const import (
     CONF_RUNNING_MODE,
     CONF_SOURCE_DEVICE_ID,
     CONF_VOLTAGE_SENSOR,
-    DEFAULT_MAX_LEVEL,
     DEFAULT_MIN_LEVEL,
     DEFAULT_PROPORTIONAL_BAND,
     DEFAULT_ROOM_TEMPERATURE_OFFSET,
@@ -58,7 +57,14 @@ from .const import (
     OPTIONAL_ENTITY_KEYS,
 )
 from .control import target_level
-from .source import source_device_id, source_telemetry_entity_ids
+from .level import current_level, level_count, level_unavailable_reason
+from .source import (
+    select_level_entity,
+    source_binding_identity,
+    source_control_contract,
+    source_device_id,
+    source_telemetry_entity_ids,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -117,6 +123,7 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         self._event_task: asyncio.Task | None = None
         self._control_dirty = False
         self._power_on_pending = False
+        self._selected_level_entity: str | None = None
 
     @property
     def hvac_mode(self) -> HVACMode:
@@ -164,30 +171,58 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         )
         return corrected if math.isfinite(corrected) else None
 
+    def _level_context(self):
+        """Rediscover only the validated contract; never trust an alternate name."""
+        if not self._source_device_id:
+            return (self.config[CONF_HEATER_LEVEL],), ()
+        contract = source_control_contract(self.hass, self._source_device_id)
+        if contract is None:
+            return None
+        controls, candidates, guards = contract
+        if (
+            controls[CONF_HEATER_POWER] != self.config[CONF_HEATER_POWER]
+            or controls[CONF_RUNNING_MODE] != self.config[CONF_RUNNING_MODE]
+        ):
+            return None
+        return candidates, guards
+
+    def _burnoff_blocked(self) -> bool:
+        context = self._level_context()
+        return context is None or any(
+            not (state := self.hass.states.get(entity_id)) or state.state != STATE_OFF
+            for entity_id in context[1]
+        )
+
+    def _level_entity_id(self) -> str:
+        context = self._level_context()
+        if context is None:
+            return self.config[CONF_HEATER_LEVEL]
+        candidates, _ = context
+        mode = self.hass.states.get(self.config[CONF_RUNNING_MODE])
+        self._selected_level_entity = select_level_entity(
+            self.hass,
+            candidates,
+            self._selected_level_entity or self.config[CONF_HEATER_LEVEL],
+            allow_available=bool(mode and self._is_level_mode(mode.state))
+            and not self._burnoff_blocked(),
+        )
+        return self._selected_level_entity
+
     def _source_unavailable_reason(self) -> str | None:
         """Explain the required source capability without hiding the failed gate."""
         if self._removed:
             return "removed"
         power = self.hass.states.get(self.config[CONF_HEATER_POWER])
         mode = self.hass.states.get(self.config[CONF_RUNNING_MODE])
-        level = self.hass.states.get(self.config[CONF_HEATER_LEVEL])
         if not power or power.state not in (STATE_ON, STATE_OFF):
             return "source_power_unavailable"
         if not mode or not self._is_level_mode(mode.state):
             return "source_mode_not_level"
-        if not level or level.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-            return "source_level_unavailable"
-        if self._source_level_count() is None:
-            return "source_level_range_invalid"
-        if self.config[CONF_HEATER_LEVEL].startswith("number."):
-            if self._source_level() is None:
-                return "source_level_invalid"
-        elif level.attributes.get("percentage") is not None and (
-            (percentage := self._finite_number(level.attributes["percentage"])) is None
-            or not 0 <= percentage <= 100
-        ):
-            return "source_level_invalid"
-        return None
+        if self._level_context() is None:
+            return "source_control_contract_invalid"
+        if self._burnoff_blocked():
+            return "source_burnoff_active_or_unavailable"
+        return level_unavailable_reason(self.hass, self._level_entity_id())
 
     def _source_ready(self) -> bool:
         """Require a writable Level-mode source, without assuming ten speeds."""
@@ -206,11 +241,13 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         for key in (
             "source_power",
             "source_level",
+            "configured_source_level",
             "source_mode",
             "source_room_temperature",
             "unavailable_reason",
         ):
             attributes[key] = diagnostics[key]
+        attributes["source_level_candidates"] = diagnostics["source_level_candidates"]
         attributes["source_states"] = {
             key: {
                 "state": state.state if state else None,
@@ -219,6 +256,14 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             for key in ("source_power", "source_level", "source_mode", "source_room_temperature")
             if (entity_id := diagnostics[key])
             and (state := self.hass.states.get(entity_id)) is not None
+        }
+        attributes["source_candidate_states"] = {
+            entity_id: {
+                "state": state.state if state else None,
+                "attributes": dict(state.attributes) if state else {},
+            }
+            for entity_id in diagnostics["source_level_candidates"]
+            for state in (self.hass.states.get(entity_id),)
         }
         return attributes
 
@@ -230,7 +275,11 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             "control_temperature_unit": self._attr_temperature_unit,
             "control_target_temperature": self._target_temperature,
             "source_power": self.config[CONF_HEATER_POWER],
-            "source_level": self.config[CONF_HEATER_LEVEL],
+            "source_level": self._level_entity_id(),
+            "configured_source_level": self.config[CONF_HEATER_LEVEL],
+            "source_level_candidates": list(context[0])
+            if (context := self._level_context())
+            else [],
             "source_mode": self.config[CONF_RUNNING_MODE],
             "source_room_temperature": self.config[CONF_ROOM_TEMPERATURE],
             "unavailable_reason": self._source_unavailable_reason()
@@ -306,6 +355,9 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         ]
         watched.extend(self.config[key] for key in OPTIONAL_ENTITY_KEYS if self.config.get(key))
         watched.extend(self._source_telemetry)
+        if context := self._level_context():
+            watched.extend(context[0])
+            watched.extend(context[1])
         self.async_on_remove(
             async_track_state_change_event(
                 self.hass, sorted(set(watched)), self._async_source_changed
@@ -421,7 +473,9 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
                 # A service call yields to Off, sensor updates, mode changes and
                 # removal. Its old demand is never permission to start later.
                 snapshot = (temperature, self._target_temperature)
-                await self._set_source_level(demand_level)
+                written = await self._set_source_level(demand_level)
+                if written is None:
+                    return
                 if self._removed or self._hvac_mode != HVACMode.HEAT:
                     return
                 mode = self.hass.states.get(self.config[CONF_RUNNING_MODE])
@@ -430,7 +484,9 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
                 if self._safety_blocked() or self.current_temperature is None:
                     await self._turn_source_off("feedback changed during control")
                     return
-                if not self._source_ready() or snapshot != (
+                if not self._source_ready() or written != self._level_write_snapshot():
+                    return
+                if snapshot != (
                     self.current_temperature,
                     self._target_temperature,
                 ):
@@ -480,64 +536,49 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         return number if math.isfinite(number) else None
 
     def _source_level_count(self) -> int | None:
-        """Use the public fan's discrete speed count (legacy fans default to ten)."""
-        source = self.hass.states.get(self.config[CONF_HEATER_LEVEL])
-        if source is None:
-            return None
-        if self.config[CONF_HEATER_LEVEL].startswith("number."):
-            minimum = self._finite_number(source.attributes.get("min"))
-            maximum = self._finite_number(source.attributes.get("max"))
-            step = self._finite_number(source.attributes.get("step"))
-            if minimum != 1 or maximum is None or step != 1:
-                return None
-            return (
-                int(maximum) if maximum.is_integer() and 1 <= maximum <= DEFAULT_MAX_LEVEL else None
-            )
-        step = self._finite_number(source.attributes.get("percentage_step", 10))
-        if step is None or not 100 / DEFAULT_MAX_LEVEL <= step <= 100:
-            return None
-        count = round(100 / step)
-        return (
-            count
-            if (
-                1 <= count <= DEFAULT_MAX_LEVEL
-                and math.isclose(step, 100 / count, rel_tol=1e-5, abs_tol=1e-6)
-            )
-            else None
-        )
+        return level_count(self.hass, self._level_entity_id())
 
     def _source_level(self) -> int | None:
-        source = self.hass.states.get(self.config[CONF_HEATER_LEVEL])
-        count = self._source_level_count()
-        if self.config[CONF_HEATER_LEVEL].startswith("number."):
-            value = self._finite_number(source.state) if source else None
-            if value is None or count is None or not value.is_integer() or not 1 <= value <= count:
-                return None
-            return int(value)
-        percentage = self._finite_number(source.attributes.get("percentage")) if source else None
-        if percentage is None or not 0 < percentage <= 100 or count is None:
-            return None
-        return max(1, min(count, math.ceil(percentage * count / 100)))
+        return current_level(self.hass, self._level_entity_id())
 
-    async def _set_source_level(self, level: int) -> None:
-        count = self._source_level_count()
-        if count is None or self._source_level() == level:
-            return
-        if self.config[CONF_HEATER_LEVEL].startswith("number."):
-            await self._call_source(
-                "number", "set_value", self.config[CONF_HEATER_LEVEL], value=level
+    def _level_write_snapshot(self) -> tuple:
+        entity_id = self._level_entity_id()
+        identity = (
+            source_binding_identity(
+                self.hass,
+                (self.config[CONF_HEATER_POWER], self.config[CONF_RUNNING_MODE], entity_id),
             )
-            return
-        await self._call_source(
-            "fan",
-            "set_percentage",
-            self.config[CONF_HEATER_LEVEL],
-            percentage=max(1, int(level * 100 / count)),
+            if self._source_device_id
+            else ()
         )
+        return entity_id, level_count(self.hass, entity_id), identity
+
+    async def _set_source_level(self, level: int) -> tuple | None:
+        """Revalidate the selected public backend immediately before its write."""
+        if not self._source_ready() or self._safety_blocked() or self.current_temperature is None:
+            return None
+        entity_id = self._level_entity_id()
+        count = level_count(self.hass, entity_id)
+        if count is None or not 1 <= level <= count:
+            return None
+        snapshot = self._level_write_snapshot()
+        if current_level(self.hass, entity_id) != level:
+            if entity_id.startswith("number."):
+                await self._call_source("number", "set_value", entity_id, value=level)
+            else:
+                await self._call_source(
+                    "fan",
+                    "set_percentage",
+                    entity_id,
+                    percentage=max(1, int(level * 100 / count)),
+                )
+        return snapshot
 
     def _can_request_source_shutdown(self) -> bool:
-        """Keep burn-off/cooldown ownership with the source integration."""
-        level = self.hass.states.get(self.config[CONF_HEATER_LEVEL])
+        """Keep burn-off/cooldown ownership with the public source integration."""
+        if self._burnoff_blocked():
+            return False
+        level = self.hass.states.get(self._level_entity_id())
         return bool(level and level.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN))
 
     async def _turn_source_off(self, reason: str) -> None:

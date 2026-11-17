@@ -17,8 +17,10 @@ from .const import (
     CONF_ROOM_TEMPERATURE,
     CONF_RUNNING_MODE,
     CONF_VOLTAGE_SENSOR,
+    LEVEL_MODE_VALUES,
     OPTIONAL_ENTITY_KEYS,
 )
+from .level import level_unavailable_reason
 
 # These are integration-local counters and estimates, not controller telemetry.
 _ESTIMATE_ENTITY_PARTS = (
@@ -84,10 +86,11 @@ def source_telemetry_entity_ids(hass: HomeAssistant, device_id: str | None) -> t
     )
 
 
-def source_control_entity_ids(
-    hass: HomeAssistant, device_id: str, *, preferred_level: str | None = None
-) -> dict[str, str] | None:
-    """Resolve the source integration's public Level-Mode control contract."""
+def source_control_contract(
+    hass: HomeAssistant,
+    device_id: str,
+) -> tuple[dict[str, str], tuple[str, ...], tuple[str, ...]] | None:
+    """Return same-owner/stem controls and optional public burn-off guards."""
     registry = er.async_get(hass)
     entries = [
         entry
@@ -95,47 +98,105 @@ def source_control_entity_ids(
         if _active_source_entry(hass, entry)
     ]
     controls: dict[str, str] = {}
-    owner_id: str | None = None
-    stem: str | None = None
-    for key, (domain, suffix) in _CONTROL_ENTITY_SUFFIXES.items():
-        matches = [
-            entry.entity_id
-            for entry in entries
-            if entry.domain == domain
-            and entry.unique_id.endswith(suffix)
-            and getattr(entry, "platform", "diesel_heater") == "diesel_heater"
-            and not getattr(entry, "disabled_by", None)
-        ]
-        if key == CONF_HEATER_LEVEL:
-            power = next(
-                entry for entry in entries if entry.entity_id == controls[CONF_HEATER_POWER]
-            )
-            number_id = power.unique_id.removesuffix("_power") + "_level"
-            number_matches = [
-                entry.entity_id
-                for entry in entries
-                if entry.domain == "number"
-                and entry.unique_id == number_id
-                and getattr(entry, "platform", "diesel_heater") == "diesel_heater"
-                and not getattr(entry, "disabled_by", None)
-            ]
-            # Preserve an existing valid binding; otherwise prefer the fan.
-            # Never fall back because a live entity is unavailable: that may
-            # be the source integration's burn-off protection.
-            if len(number_matches) == 1 and (not matches or preferred_level == number_matches[0]):
-                matches = number_matches
+    selected = {}
+    for key in (CONF_HEATER_POWER, CONF_RUNNING_MODE):
+        domain, suffix = _CONTROL_ENTITY_SUFFIXES[key]
+        matches = [e for e in entries if e.domain == domain and e.unique_id.endswith(suffix)]
         if len(matches) != 1:
             return None
-        selected = next(entry for entry in entries if entry.entity_id == matches[0])
-        if key == CONF_HEATER_POWER:
-            owner_id = selected.config_entry_id
-            stem = selected.unique_id.removesuffix("_power")
-        elif selected.config_entry_id != owner_id or selected.unique_id != (
-            f"{stem}_level" if selected.domain == "number" else f"{stem}{suffix}"
-        ):
+        selected[key] = matches[0]
+        controls[key] = matches[0].entity_id
+    power = selected[CONF_HEATER_POWER]
+    mode = selected[CONF_RUNNING_MODE]
+    stem = power.unique_id.removesuffix("_power")
+    if mode.config_entry_id != power.config_entry_id or mode.unique_id != f"{stem}_running_mode":
+        return None
+    levels = []
+    for domain, suffix in (("fan", "_heater_level"), ("number", "_level")):
+        matches = [
+            e
+            for e in entries
+            if e.domain == domain
+            and (
+                e.unique_id.endswith(suffix)
+                if domain == "fan"
+                else e.unique_id == f"{stem}{suffix}"
+            )
+        ]
+        if len(matches) > 1:
             return None
-        controls[key] = matches[0]
+        if matches:
+            candidate = matches[0]
+            if (
+                candidate.config_entry_id != power.config_entry_id
+                or candidate.unique_id != f"{stem}{suffix}"
+            ):
+                continue
+            levels.append(candidate.entity_id)
+    if not levels:
+        return None
+    guards = tuple(
+        e.entity_id
+        for e in entries
+        if e.domain == "binary_sensor"
+        and e.unique_id == f"{stem}_burnoff_active"
+        and e.config_entry_id == power.config_entry_id
+    )
+    return controls, tuple(levels), guards
+
+
+def select_level_entity(
+    hass: HomeAssistant,
+    candidates: tuple[str, ...],
+    preferred: str | None,
+    *,
+    allow_available: bool,
+) -> str:
+    """Keep a usable preference; otherwise choose a usable public alternate."""
+    ordered = (
+        tuple(dict.fromkeys((preferred, *candidates))) if preferred in candidates else candidates
+    )
+    if allow_available:
+        for entity_id in ordered:
+            if level_unavailable_reason(hass, entity_id) is None:
+                return entity_id
+    return ordered[0]
+
+
+def source_control_entity_ids(
+    hass: HomeAssistant,
+    device_id: str,
+    *,
+    preferred_level: str | None = None,
+) -> dict[str, str] | None:
+    """Resolve bindings, preferring available controls only in explicit Level mode."""
+    contract = source_control_contract(hass, device_id)
+    if contract is None:
+        return None
+    controls, candidates, guards = contract
+    mode = hass.states.get(controls[CONF_RUNNING_MODE])
+    safe = bool(mode and mode.state in LEVEL_MODE_VALUES) and all(
+        (state := hass.states.get(entity_id)) is not None and state.state == "off"
+        for entity_id in guards
+    )
+    controls[CONF_HEATER_LEVEL] = select_level_entity(
+        hass,
+        candidates,
+        preferred_level,
+        allow_available=safe,
+    )
     return controls
+
+
+def source_binding_identity(hass: HomeAssistant, entity_ids: tuple[str, ...]) -> tuple:
+    """Snapshot registry identities and ownership across a public service await."""
+    registry = er.async_get(hass)
+    return tuple(
+        (entry.id, entry.config_entry_id, entry.unique_id, entry.device_id)
+        if (entry := registry.async_get(entity_id)) is not None
+        else None
+        for entity_id in entity_ids
+    )
 
 
 def source_telemetry_defaults(hass: HomeAssistant, device_id: str) -> dict[str, str]:

@@ -45,6 +45,7 @@ RUNTIME_FILES = {
     "const.py",
     "control.py",
     "source.py",
+    "level.py",
     "strings.json",
     "translations/en.json",
 }
