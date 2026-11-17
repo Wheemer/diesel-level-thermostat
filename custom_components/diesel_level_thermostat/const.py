@@ -39,3 +39,6 @@ OPTIONAL_ENTITY_KEYS: Final = (
 )
 
 CONF_ENTITY_REGISTRY_IDS: Final = "entity_registry_ids"
+
+CONF_TEMPERATURE_HYSTERESIS = "temperature_hysteresis"
+DEFAULT_TEMPERATURE_HYSTERESIS = 0.0

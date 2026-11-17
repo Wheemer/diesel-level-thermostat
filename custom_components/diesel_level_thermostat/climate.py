@@ -49,10 +49,12 @@ from .const import (
     CONF_RUNNING_MODE,
     CONF_SOURCE_BURNOFF_GUARD_REQUIRED,
     CONF_SOURCE_DEVICE_ID,
+    CONF_TEMPERATURE_HYSTERESIS,
     CONF_VOLTAGE_SENSOR,
     DEFAULT_MIN_LEVEL,
     DEFAULT_PROPORTIONAL_BAND,
     DEFAULT_ROOM_TEMPERATURE_OFFSET,
+    DEFAULT_TEMPERATURE_HYSTERESIS,
     DOMAIN,
     LEVEL_MODE_VALUES,
     OPTIONAL_ENTITY_KEYS,
@@ -127,6 +129,7 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         self._control_dirty = False
         self._power_on_pending = False
         self._selected_level_entity: str | None = None
+        self._heating_cycle: bool | None = None
         self._shutdown_pending = False
         self._shutdown_block_reason: str | None = None
         self._last_control_error: str | None = None
@@ -227,6 +230,8 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         """Explain the required source capability without hiding the failed gate."""
         if self._removed:
             return "removed"
+        if self._hysteresis() is None:
+            return "invalid_temperature_hysteresis"
         power = self.hass.states.get(self.config[CONF_HEATER_POWER])
         mode = self.hass.states.get(self.config[CONF_RUNNING_MODE])
         if not power or power.state not in (STATE_ON, STATE_OFF):
@@ -262,6 +267,8 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             "unavailable_reason",
             "shutdown_pending",
             "control_hvac_mode",
+            "heating_cycle",
+            "temperature_hysteresis_c",
             "control_target_temperature",
             "control_temperature_unit",
             "shutdown_block_reason",
@@ -293,6 +300,8 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         """Expose the source entities that drive this controller."""
         attributes: dict[str, Any] = {
             "control_hvac_mode": self._hvac_mode,
+            "heating_cycle": self._heating_cycle,
+            "temperature_hysteresis_c": self._hysteresis(),
             "control_temperature_unit": self._attr_temperature_unit,
             "control_target_temperature": self._target_temperature,
             "source_power": self.config[CONF_HEATER_POWER],
@@ -332,6 +341,9 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             )
             if restored_mode in (HVACMode.HEAT, HVACMode.OFF):
                 self._hvac_mode = HVACMode(restored_mode)
+            cycle = old_state.attributes.get("heating_cycle")
+            if self._hvac_mode == HVACMode.HEAT and isinstance(cycle, bool):
+                self._heating_cycle = cycle
             restored = self._finite_number(
                 old_state.attributes.get(
                     "control_target_temperature", old_state.attributes.get(ATTR_TEMPERATURE)
@@ -460,6 +472,8 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             raise HomeAssistantError("Only Heat and Off are supported")
         if self._removed:
             return
+        if hvac_mode != self._hvac_mode:
+            self._heating_cycle = None if hvac_mode == HVACMode.HEAT else False
         self._hvac_mode = hvac_mode
         if hvac_mode == HVACMode.HEAT:
             self._shutdown_pending = False
@@ -519,8 +533,8 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
                     return
                 control_temperature = self._to_celsius(temperature)
                 control_target = self._to_celsius(self._target_temperature)
-                if control_temperature >= control_target:
-                    await self._turn_source_off("target temperature reached")
+                if not self._heat_required(temperature):
+                    await self._turn_source_off("temperature switching threshold reached")
                     return
                 self._shutdown_pending = False
                 self._shutdown_block_reason = None
@@ -533,7 +547,7 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
                 )
                 # A service call yields to Off, sensor updates, mode changes and
                 # removal. Its old demand is never permission to start later.
-                snapshot = (temperature, self._target_temperature)
+                snapshot = (temperature, self._target_temperature, self._hysteresis())
                 written = await self._set_source_level(demand_level)
                 if written is None:
                     return
@@ -550,6 +564,7 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
                 if snapshot != (
                     self.current_temperature,
                     self._target_temperature,
+                    self._hysteresis(),
                 ):
                     return
                 if self._is_source_on():
@@ -574,15 +589,39 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
                             temperature = self.current_temperature
                             if self._safety_blocked() or temperature is None:
                                 await self._turn_source_off("feedback changed during startup")
-                            elif self._target_temperature is not None and (
-                                self._to_celsius(temperature)
-                                >= self._to_celsius(self._target_temperature)
-                            ):
+                            elif not self._heat_required(temperature):
                                 await self._turn_source_off("target reached during startup")
                 if not self._removed:
                     self.async_write_ha_state()
         finally:
             self._control_tasks.discard(task)
+
+    def _hysteresis(self) -> float | None:
+        """Return the configured Celsius delta, rejecting invalid saved values."""
+        value = self._finite_number(
+            self.config.get(CONF_TEMPERATURE_HYSTERESIS, DEFAULT_TEMPERATURE_HYSTERESIS)
+        )
+        return value if value is not None and 0 <= value <= 5 else None
+
+    def _heat_required(self, temperature: float) -> bool:
+        """Latch demand between thresholds, independently of delayed power reports."""
+        band = self._hysteresis()
+        if band is None or self._target_temperature is None:
+            self._heating_cycle = False
+            return False
+        current = self._to_celsius(temperature)
+        target = self._to_celsius(self._target_temperature)
+        # Unit conversion can put an exact Fahrenheit boundary a few ulps
+        # below its Celsius equivalent. Only absorb numerical roundoff.
+        at_upper = band > 0 and math.isclose(current, target + band, rel_tol=0, abs_tol=1e-9)
+        at_lower = band > 0 and math.isclose(current, target - band, rel_tol=0, abs_tol=1e-9)
+        if current >= target + band or at_upper:
+            self._heating_cycle = False
+        elif current < target - band or at_lower:
+            self._heating_cycle = True
+        elif self._heating_cycle is None:
+            self._heating_cycle = self._is_source_on() or self._power_on_pending
+        return bool(self._heating_cycle)
 
     def _to_celsius(self, temperature: float) -> float:
         """Convert a Home Assistant display temperature to control Celsius."""
@@ -662,6 +701,7 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         """Request normal shutdown, retaining a blocked demand for source events."""
         if self._removed:
             return False
+        self._heating_cycle = False
         if not (self._is_source_on() or self._power_on_pending):
             power = self.hass.states.get(self.config[CONF_HEATER_POWER])
             if power and power.state == STATE_OFF:

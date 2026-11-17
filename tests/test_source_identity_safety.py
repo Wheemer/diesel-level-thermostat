@@ -251,6 +251,7 @@ async def test_normal_options_hide_resolved_optional_sensors(monkeypatch):
     assert {str(marker) for marker in form["data_schema"].schema} == {
         "room_temperature",
         "room_temperature_offset",
+        "temperature_hysteresis",
     }
 
 

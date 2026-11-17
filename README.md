@@ -25,9 +25,9 @@ It adds a separate climate entity under its own integration and device.
 ## Features
 
 - 🌡️ Adjusts heating levels as the room approaches your target temperature.
-- 🔄 Requests normal shutdown at target and startup again when the room cools.
+- 🔄 Requests normal shutdown and startup using an optional temperature hysteresis.
 - 📡 Uses the heater’s temperature sensor or an external room sensor.
-- ⚙️ Offers an editable room sensor and local temperature offset.
+- ⚙️ Offers an editable room sensor, local temperature offset, and hysteresis.
 - 🛡️ Respects the source integration’s burn-off locks and normal shutdown controls.
 
 ## Installation
@@ -49,11 +49,12 @@ installation with Power, Running Mode, and a compatible Heater Level fan or Leve
 
 Put the heater in **Level Mode**, then select **Heat** and a target temperature
 on the new thermostat. It selects the output from the temperature gap, reducing
-levels toward the target. At target it requests normal shutdown; selecting
+levels toward the target. With the default 0°C hysteresis it requests normal shutdown at target; selecting
 **Off** disables automatic heating. The heater remains responsible for cooldown.
 
-Change the room sensor and offset through the integration’s configuration options.
-The offset is in Celsius and affects only this thermostat’s feedback.
+Change the room sensor, offset, and hysteresis during setup or through configuration options.
+The offset is in Celsius and affects only this thermostat’s feedback. Hysteresis defaults
+to 0°C; see the [control reference](docs/REFERENCE.md#control-policy) for switching thresholds.
 
 The heater’s native Temperature Mode remains under the original integration.
 This thermostat is unavailable outside Level Mode.

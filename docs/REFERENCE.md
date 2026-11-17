@@ -21,7 +21,7 @@ device. Other enabled physical sensor readings are included as telemetry
 attributes, not additional room-control inputs. The room-temperature field
 defaults to the heater's interior sensor but can be changed to an external room
 sensor. The same selector and a local Celsius offset remain editable from
-Options. Use a negative offset when the sensor reads too high. This local
+Options, alongside temperature hysteresis. Use a negative offset when the sensor reads too high. This local
 correction does not change the sensor or write calibration to the heater. Saving
 options reloads the thermostat. Stable entity-registry references preserve
 selected sensors across renames. Controls from different heaters cannot be
@@ -92,13 +92,20 @@ at or above 5°C selects maximum output; a small positive gap selects level 1 (u
 to 0.5°C below target with ten stages). All control math uses Celsius, including
 on Fahrenheit installations.
 
-At or above target it requests the source's normal Power-off command. The
-virtual thermostat remains in Heat and can request startup again below target.
+With the default **0°C hysteresis**, at or above target it requests the source's
+normal Power-off command and can request startup again below target. A configurable
+hysteresis of 0–5°C is available in setup and Options. With a value of 1°C and
+a 20°C target, heating starts at or below 19°C and stops at or above 21°C.
+Between those limits it keeps the current heating cycle; an idle heater stays
+idle and a heating cycle continues at the level calculated from the original
+target (minimum level at or above target). A Celsius delta is used on all
+installations: 1°C equals 1.8°F. The virtual thermostat remains in Heat.
 Normal cooldown may continue after shutdown is requested. Increasing or
 decreasing demand selects the newly calculated level immediately. There is no
-one-step ramp, hold timer, overshoot band, periodic control timer, or native
+one-step ramp, hold timer, periodic control timer, or native
 heater calibration write. The normal feedback options are the room sensor and
-its local Celsius offset; deleted safety-sensor bindings can also be repaired.
+its local Celsius offset and hysteresis; deleted safety-sensor bindings can also
+be repaired. Hysteresis never delays explicit Off or safety shutdown requests.
 Case, intake, outlet and exhaust probes are not averaged into room temperature.
 
 Control is suspended outside Level Mode. A source-owned burn-off remains in
@@ -107,7 +114,7 @@ normal shutdown; it does not cut electrical power. Missing or invalid room
 feedback also requests normal shutdown when Level-mode ownership and the
 source's shutdown gate permit it.
 
-The virtual Heat/Off state and target are restored after a restart, with the
+The virtual Heat/Off state, heating cycle and target are restored after a restart, with the
 saved target converted if Home Assistant's temperature unit changes. An invalid
 or unresolvable out-of-range legacy target leaves virtual heating Off. Restored
 heating demand waits for valid source inputs. Pending control tasks are

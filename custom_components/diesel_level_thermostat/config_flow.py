@@ -19,8 +19,10 @@ from .const import (
     CONF_ROOM_TEMPERATURE,
     CONF_ROOM_TEMPERATURE_OFFSET,
     CONF_SOURCE_DEVICE_ID,
+    CONF_TEMPERATURE_HYSTERESIS,
     DEFAULT_LEVEL_MODE_VALUE,
     DEFAULT_ROOM_TEMPERATURE_OFFSET,
+    DEFAULT_TEMPERATURE_HYSTERESIS,
     DOMAIN,
     OPTIONAL_ENTITY_KEYS,
 )
@@ -66,6 +68,7 @@ def options_schema(
     room_temperature: str | None,
     offset: float = DEFAULT_ROOM_TEMPERATURE_OFFSET,
     repair_entities: dict[str, str | None] | None = None,
+    hysteresis: float = DEFAULT_TEMPERATURE_HYSTERESIS,
 ) -> vol.Schema:
     """Build the primary room-feedback options schema."""
     return vol.Schema(
@@ -77,6 +80,9 @@ def options_schema(
                 CONF_ROOM_TEMPERATURE_OFFSET,
                 default=offset,
             ): _number_selector(-20, 20, 0.1),
+            vol.Required(CONF_TEMPERATURE_HYSTERESIS, default=hysteresis): _number_selector(
+                0, 5, 0.1
+            ),
             **{
                 vol.Optional(key): _entity_selector(
                     "binary_sensor" if key == CONF_FAULT_SENSOR else "sensor",
@@ -99,6 +105,12 @@ def feedback_errors(values: dict[str, Any], hass) -> dict[str, str]:
             errors[CONF_ROOM_TEMPERATURE_OFFSET] = "invalid_offset"
     except (TypeError, ValueError):
         errors[CONF_ROOM_TEMPERATURE_OFFSET] = "invalid_offset"
+    try:
+        hysteresis = float(values.get(CONF_TEMPERATURE_HYSTERESIS, 0))
+        if not math.isfinite(hysteresis) or not 0 <= hysteresis <= 5:
+            errors[CONF_TEMPERATURE_HYSTERESIS] = "invalid_hysteresis"
+    except (TypeError, ValueError):
+        errors[CONF_TEMPERATURE_HYSTERESIS] = "invalid_hysteresis"
     room = values.get(CONF_ROOM_TEMPERATURE)
     if not isinstance(room, str) or not room.startswith("sensor."):
         errors[CONF_ROOM_TEMPERATURE] = "invalid_sensor"
@@ -221,6 +233,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_ROOM_TEMPERATURE_OFFSET,
                     default=DEFAULT_ROOM_TEMPERATURE_OFFSET,
                 ): _number_selector(-20, 20, 0.1),
+                vol.Required(
+                    CONF_TEMPERATURE_HYSTERESIS, default=DEFAULT_TEMPERATURE_HYSTERESIS
+                ): _number_selector(0, 5, 0.1),
             }
         )
 
@@ -238,7 +253,7 @@ class DieselLevelThermostatOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Update the two inputs used by the staged control loop."""
+        """Update room feedback and the temperature switching band."""
         saved = {**self.config_entry.data, **self.config_entry.options}
         registry_ids = saved.get(CONF_ENTITY_REGISTRY_IDS, {})
         resolved = resolve_entity_references(self.hass, saved) if registry_ids else {}
@@ -254,6 +269,7 @@ class DieselLevelThermostatOptionsFlow(config_entries.OptionsFlow):
             room,
             saved.get(CONF_ROOM_TEMPERATURE_OFFSET, DEFAULT_ROOM_TEMPERATURE_OFFSET),
             repair_entities=repairs,
+            hysteresis=saved.get(CONF_TEMPERATURE_HYSTERESIS, DEFAULT_TEMPERATURE_HYSTERESIS),
         )
         if user_input is not None:
             errors = feedback_errors(user_input, self.hass)

@@ -14,11 +14,13 @@
         "data": {
           "name": "Name",
           "room_temperature": "Room temperature",
-          "room_temperature_offset": "Room temperature offset (C)"
+          "room_temperature_offset": "Room temperature offset (C)",
+          "temperature_hysteresis": "Temperature hysteresis (°C)"
         },
         "data_description": {
           "room_temperature": "The temperature used to decide when to start, stop, and adjust the heater level.",
-          "room_temperature_offset": "A local correction in Celsius applied only by this thermostat. Use a negative value when the selected sensor reads too high."
+          "room_temperature_offset": "A local correction in Celsius applied only by this thermostat. Use a negative value when the selected sensor reads too high.",
+          "temperature_hysteresis": "Default 0 preserves switching at the target. A value of 1 starts heating at 1°C below target and stops at 1°C above target (1°C = 1.8°F). Between these limits, the current heating cycle is retained."
         }
       }
     },
@@ -27,7 +29,8 @@
       "unsupported_source_device": "This device needs enabled Power and Running Mode controls, plus a Heater Level fan or Level number.",
       "invalid_offset": "Enter a finite offset between -20 and 20 Celsius.",
       "invalid_sensor": "Choose a temperature sensor.",
-      "invalid_room_temperature": "Choose an existing sensor with a valid numeric temperature and temperature unit."
+      "invalid_room_temperature": "Choose an existing sensor with a valid numeric temperature and temperature unit.",
+      "invalid_hysteresis": "Enter a finite hysteresis between 0 and 5 Celsius."
     },
     "abort": {
       "already_configured": "This heater is already configured."
@@ -44,11 +47,13 @@
           "fault_sensor": "Fault sensor",
           "voltage_sensor": "Supply voltage sensor",
           "case_temperature": "Case temperature sensor",
-          "exhaust_temperature": "Outlet temperature sensor"
+          "exhaust_temperature": "Outlet temperature sensor",
+          "temperature_hysteresis": "Temperature hysteresis (°C)"
         },
         "data_description": {
           "room_temperature": "The temperature used to decide when to start, stop, and adjust the heater level.",
-          "room_temperature_offset": "A local correction in Celsius applied only by this thermostat. Use a negative value when the selected sensor reads too high."
+          "room_temperature_offset": "A local correction in Celsius applied only by this thermostat. Use a negative value when the selected sensor reads too high.",
+          "temperature_hysteresis": "Default 0 preserves switching at the target. A value of 1 starts heating at 1°C below target and stops at 1°C above target (1°C = 1.8°F). Between these limits, the current heating cycle is retained."
         }
       }
     },
@@ -56,7 +61,8 @@
       "invalid_offset": "Enter a finite offset between -20 and 20 Celsius.",
       "invalid_sensor": "Choose a temperature sensor.",
       "invalid_safety_sensor": "Choose the matching sensor from this heater with the correct measurement type.",
-      "invalid_room_temperature": "Choose an existing sensor with a valid numeric temperature and temperature unit."
+      "invalid_room_temperature": "Choose an existing sensor with a valid numeric temperature and temperature unit.",
+      "invalid_hysteresis": "Enter a finite hysteresis between 0 and 5 Celsius."
     }
   }
 }
