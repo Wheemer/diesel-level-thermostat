@@ -164,25 +164,34 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         )
         return corrected if math.isfinite(corrected) else None
 
-    def _source_ready(self) -> bool:
-        """Require a writable Level-mode source, without assuming ten speeds."""
+    def _source_unavailable_reason(self) -> str | None:
+        """Explain the required source capability without hiding the failed gate."""
+        if self._removed:
+            return "removed"
         power = self.hass.states.get(self.config[CONF_HEATER_POWER])
         mode = self.hass.states.get(self.config[CONF_RUNNING_MODE])
         level = self.hass.states.get(self.config[CONF_HEATER_LEVEL])
-        return bool(
-            not self._removed
-            and power
-            and power.state in (STATE_ON, STATE_OFF)
-            and mode
-            and self._is_level_mode(mode.state)
-            and level
-            and level.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
-            and self._source_level_count() is not None
-            and (
-                level.attributes.get("percentage") is None
-                or self._finite_number(level.attributes["percentage"]) is not None
-            )
-        )
+        if not power or power.state not in (STATE_ON, STATE_OFF):
+            return "source_power_unavailable"
+        if not mode or not self._is_level_mode(mode.state):
+            return "source_mode_not_level"
+        if not level or level.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return "source_level_unavailable"
+        if self._source_level_count() is None:
+            return "source_level_range_invalid"
+        if self.config[CONF_HEATER_LEVEL].startswith("number."):
+            if self._source_level() is None:
+                return "source_level_invalid"
+        elif level.attributes.get("percentage") is not None and (
+            (percentage := self._finite_number(level.attributes["percentage"])) is None
+            or not 0 <= percentage <= 100
+        ):
+            return "source_level_invalid"
+        return None
+
+    def _source_ready(self) -> bool:
+        """Require a writable Level-mode source, without assuming ten speeds."""
+        return self._source_unavailable_reason() is None
 
     @property
     def available(self) -> bool:
@@ -199,6 +208,9 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             "source_power": self.config[CONF_HEATER_POWER],
             "source_level": self.config[CONF_HEATER_LEVEL],
             "source_mode": self.config[CONF_RUNNING_MODE],
+            "source_room_temperature": self.config[CONF_ROOM_TEMPERATURE],
+            "unavailable_reason": self._source_unavailable_reason()
+            or ("room_temperature_invalid" if self.current_temperature is None else None),
             "control_active": self.available and self._hvac_mode == HVACMode.HEAT,
             "room_temperature_offset_c": self.config.get(
                 CONF_ROOM_TEMPERATURE_OFFSET, DEFAULT_ROOM_TEMPERATURE_OFFSET
@@ -448,23 +460,49 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         source = self.hass.states.get(self.config[CONF_HEATER_LEVEL])
         if source is None:
             return None
+        if self.config[CONF_HEATER_LEVEL].startswith("number."):
+            minimum = self._finite_number(source.attributes.get("min"))
+            maximum = self._finite_number(source.attributes.get("max"))
+            step = self._finite_number(source.attributes.get("step"))
+            if minimum != 1 or maximum is None or step != 1:
+                return None
+            return (
+                int(maximum) if maximum.is_integer() and 1 <= maximum <= DEFAULT_MAX_LEVEL else None
+            )
         step = self._finite_number(source.attributes.get("percentage_step", 10))
         if step is None or not 100 / DEFAULT_MAX_LEVEL <= step <= 100:
             return None
         count = round(100 / step)
-        return count if 1 <= count <= DEFAULT_MAX_LEVEL else None
+        return (
+            count
+            if (
+                1 <= count <= DEFAULT_MAX_LEVEL
+                and math.isclose(step, 100 / count, rel_tol=1e-5, abs_tol=1e-6)
+            )
+            else None
+        )
 
     def _source_level(self) -> int | None:
         source = self.hass.states.get(self.config[CONF_HEATER_LEVEL])
         count = self._source_level_count()
+        if self.config[CONF_HEATER_LEVEL].startswith("number."):
+            value = self._finite_number(source.state) if source else None
+            if value is None or count is None or not value.is_integer() or not 1 <= value <= count:
+                return None
+            return int(value)
         percentage = self._finite_number(source.attributes.get("percentage")) if source else None
-        if percentage is None or percentage <= 0 or count is None:
+        if percentage is None or not 0 < percentage <= 100 or count is None:
             return None
         return max(1, min(count, math.ceil(percentage * count / 100)))
 
     async def _set_source_level(self, level: int) -> None:
         count = self._source_level_count()
         if count is None or self._source_level() == level:
+            return
+        if self.config[CONF_HEATER_LEVEL].startswith("number."):
+            await self._call_source(
+                "number", "set_value", self.config[CONF_HEATER_LEVEL], value=level
+            )
             return
         await self._call_source(
             "fan",

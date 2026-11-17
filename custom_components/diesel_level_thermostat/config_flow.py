@@ -12,6 +12,7 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_ENTITY_REGISTRY_IDS,
+    CONF_FAULT_SENSOR,
     CONF_LEVEL_MODE_VALUE,
     CONF_ROOM_TEMPERATURE,
     CONF_ROOM_TEMPERATURE_OFFSET,
@@ -19,8 +20,14 @@ from .const import (
     DEFAULT_LEVEL_MODE_VALUE,
     DEFAULT_ROOM_TEMPERATURE_OFFSET,
     DOMAIN,
+    OPTIONAL_ENTITY_KEYS,
 )
-from .source import entity_registry_ids, source_control_entity_ids, source_telemetry_defaults
+from .source import (
+    entity_registry_ids,
+    resolve_entity_references,
+    source_control_entity_ids,
+    source_telemetry_defaults,
+)
 
 
 def _entity_selector(domain: str, device_class: str | None = None) -> selector.EntitySelector:
@@ -53,7 +60,9 @@ USER_SCHEMA = vol.Schema(
 
 
 def options_schema(
-    room_temperature: str | None, offset: float = DEFAULT_ROOM_TEMPERATURE_OFFSET
+    room_temperature: str | None,
+    offset: float = DEFAULT_ROOM_TEMPERATURE_OFFSET,
+    repair_entities: dict[str, str | None] | None = None,
 ) -> vol.Schema:
     """Build the primary room-feedback options schema."""
     return vol.Schema(
@@ -65,6 +74,12 @@ def options_schema(
                 CONF_ROOM_TEMPERATURE_OFFSET,
                 default=offset,
             ): _number_selector(-20, 20, 0.1),
+            **{
+                vol.Required(key, default=value): _entity_selector(
+                    "binary_sensor" if key == CONF_FAULT_SENSOR else "sensor"
+                )
+                for key, value in (repair_entities or {}).items()
+            },
         }
     )
 
@@ -161,36 +176,51 @@ class DieselLevelThermostatOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Update the two inputs used by the staged control loop."""
+        saved = {**self.config_entry.data, **self.config_entry.options}
+        registry_ids = saved.get(CONF_ENTITY_REGISTRY_IDS, {})
+        resolved = resolve_entity_references(self.hass, saved) if registry_ids else {}
+        repairs = {
+            key: None for key in OPTIONAL_ENTITY_KEYS if key in registry_ids and key not in resolved
+        }
+        room = (
+            resolved.get(CONF_ROOM_TEMPERATURE)
+            if CONF_ROOM_TEMPERATURE in registry_ids
+            else saved.get(CONF_ROOM_TEMPERATURE)
+        )
+        schema = options_schema(
+            room,
+            saved.get(CONF_ROOM_TEMPERATURE_OFFSET, DEFAULT_ROOM_TEMPERATURE_OFFSET),
+            repair_entities=repairs,
+        )
         if user_input is not None:
-            if errors := feedback_errors(user_input):
+            errors = feedback_errors(user_input)
+            for key in repairs:
+                domain = "binary_sensor." if key == CONF_FAULT_SENSOR else "sensor."
+                if not isinstance(user_input.get(key), str) or not user_input[key].startswith(
+                    domain
+                ):
+                    errors[key] = "invalid_sensor"
+            if errors:
                 return self.async_show_form(
                     step_id="init",
-                    data_schema=options_schema(
-                        self.config_entry.options.get(
-                            CONF_ROOM_TEMPERATURE, self.config_entry.data.get(CONF_ROOM_TEMPERATURE)
-                        )
-                    ),
+                    data_schema=schema,
                     errors=errors,
                 )
-            config = {**self.config_entry.data, **self.config_entry.options, **user_input}
+            config = {**saved, **user_input}
             options = {**self.config_entry.options, **user_input}
-            options[CONF_ENTITY_REGISTRY_IDS] = entity_registry_ids(self.hass, config)
+            options[CONF_ENTITY_REGISTRY_IDS] = entity_registry_ids(
+                self.hass,
+                config,
+                rebind=(CONF_ROOM_TEMPERATURE, *repairs),
+            )
             return self.async_create_entry(title="", data=options)
+        suggestions = dict(self.config_entry.options)
+        # An old entity name must not preselect a replacement after identity loss.
+        if CONF_ROOM_TEMPERATURE in registry_ids:
+            suggestions.pop(CONF_ROOM_TEMPERATURE, None)
+        for key in repairs:
+            suggestions.pop(key, None)
         return self.async_show_form(
             step_id="init",
-            data_schema=self.add_suggested_values_to_schema(
-                options_schema(
-                    self.config_entry.options.get(
-                        CONF_ROOM_TEMPERATURE,
-                        self.config_entry.data.get(CONF_ROOM_TEMPERATURE),
-                    ),
-                    self.config_entry.options.get(
-                        CONF_ROOM_TEMPERATURE_OFFSET,
-                        self.config_entry.data.get(
-                            CONF_ROOM_TEMPERATURE_OFFSET, DEFAULT_ROOM_TEMPERATURE_OFFSET
-                        ),
-                    ),
-                ),
-                self.config_entry.options,
-            ),
+            data_schema=self.add_suggested_values_to_schema(schema, suggestions),
         )

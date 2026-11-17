@@ -70,19 +70,36 @@ temperature regulation. It remains visible through the source integration.
 ## Controller Coverage
 
 This thermostat supports every source heater that exposes the public Level-Mode
-contract: a Power switch, a discrete Heater Level fan, and a Running Mode
-select on one device. The setup is telemetry-aware rather than
+contract: a Power switch, a Running Mode select with Level mode, and either a discrete
+Heater Level fan or an enabled Level number on the same device. The fan is
+preferred during setup; a valid existing number binding is preserved on reload. The setup is telemetry-aware rather than
 protocol-hardcoded, so it follows the actual entities exposed by each
 controller, including six-step ABBA and ten-step source fans. That covers the established AA55/AA66, ABBA/HeaterCC,
 CBFF/Sunster, Hcalory MVP, and HeatGenie/Boygu air-heater families when their
 source entities expose that contract.
 
-Webasto Cronus and DZ06 Neo are intentionally not selectable for staged-level
-control: they do not expose this Heater Level contract. Use a
-Diesel Heater release that hides the Heater Level fan for those controllers;
-older source releases can expose a legacy fan entity that is not safe for this
-thermostat to drive. Water controllers are likewise excluded because a
-room-air level loop would be the wrong control model.
+Warm Drive **air** controllers using the split DZ06 transport are supported
+when their source integration exposes working Level controls. Source releases
+with the pump-frequency-as-level bug need the upstream Warm Drive correction
+before their feedback can be used reliably.
+
+Generic Neo controllers currently expose no public staged-level output.
+Webasto Cronus exposes numbered speeds for ventilation, not heating stages;
+its Heating/Boost/Eco modes are not Level mode. Those controls cannot be used
+as interchangeable heat levels. Room-air staged control also does not supply
+a water-heater control model. Acceptance follows the available control
+capabilities, rather than a heater-brand blacklist.
+
+Disabled controls are not silently enabled. Orphan registry rows are ignored,
+but genuinely ambiguous active controls require correction. If a configured
+source loses its required controls, setup reports the missing/disabled source
+rather than retaining unvalidated bindings. The thermostat's attributes include
+`unavailable_reason` and the selected source entity IDs so a missing input is
+visible without guessing. Source-owned burn-off unavailability remains a hard
+gate; the thermostat does not switch control backends to bypass it. Saved feedback identities are never silently
+replaced by another entity reusing the old name. If a selected sensor was deleted,
+open the integration's options and explicitly select its replacement. Safety-input repair fields
+appear there only when a saved identity no longer resolves; their limits are preserved.
 
 ## Control Policy
 

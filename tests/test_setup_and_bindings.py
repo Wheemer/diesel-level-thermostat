@@ -15,6 +15,7 @@ from custom_components.diesel_level_thermostat.source import (
     resolve_entity_references,
     source_telemetry_entity_ids,
 )
+from tests.source_fixtures import source_hass
 
 
 def registry():
@@ -37,6 +38,7 @@ def registry():
             unique_id=f"aa_{suffix}",
             device_id="source",
             disabled_by=None,
+            config_entry_id="source-entry",
         )
         entries[entry.entity_id] = entry
     return SimpleNamespace(entities=entries, async_get=entries.get)
@@ -63,7 +65,7 @@ def entry(data=None):
 
 async def test_setup_rebinds_renamed_controls_and_room_then_reloads_on_options():
     e = entry()
-    h = SimpleNamespace(
+    h = source_hass(
         config_entries=SimpleNamespace(
             async_forward_entry_setups=AsyncMock(), async_reload=AsyncMock()
         ),
@@ -93,7 +95,7 @@ async def test_setup_rebinds_renamed_controls_and_room_then_reloads_on_options()
 async def test_registry_rename_requests_reload_only_for_selected_device():
     e = entry()
     reg = registry()
-    h = SimpleNamespace(
+    h = source_hass(
         config_entries=SimpleNamespace(
             async_forward_entry_setups=AsyncMock(),
             async_reload=AsyncMock(),
@@ -123,7 +125,11 @@ async def test_options_form_preserves_offset_from_initial_setup(monkeypatch):
     e = entry()
     monkeypatch.setattr(DieselLevelThermostatOptionsFlow, "config_entry", property(lambda _: e))
     flow = DieselLevelThermostatOptionsFlow()
-    result = await flow.async_step_init()
+    flow.hass = source_hass()
+    with patch(
+        "custom_components.diesel_level_thermostat.source.er.async_get", return_value=registry()
+    ):
+        result = await flow.async_step_init()
     schema = result["data_schema"]
     marker = next(k for k in schema.schema if str(k) == "room_temperature_offset")
     assert marker.default() == -5
@@ -136,7 +142,8 @@ async def test_options_rebind_external_sensor_by_registry_id(monkeypatch):
     reg.entities[external.entity_id] = external
     monkeypatch.setattr(DieselLevelThermostatOptionsFlow, "config_entry", property(lambda _: e))
     flow = DieselLevelThermostatOptionsFlow()
-    flow.hass = object()
+    flow.hass = source_hass()
+    flow.hass = source_hass()
     with patch("custom_components.diesel_level_thermostat.source.er.async_get", return_value=reg):
         result = await flow.async_step_init(
             {"room_temperature": "sensor.external", "room_temperature_offset": -2}
@@ -147,7 +154,7 @@ async def test_options_rebind_external_sensor_by_registry_id(monkeypatch):
 
 async def test_complete_user_flow_autopopulates_and_persists_registry_bindings():
     flow = ConfigFlow()
-    flow.hass = object()
+    flow.hass = source_hass()
     flow.async_set_unique_id = AsyncMock()
     flow._abort_if_unique_id_configured = MagicMock()
     with (
@@ -181,6 +188,7 @@ def test_renamed_estimates_do_not_become_physical_telemetry():
         unique_id="aa_fuel_remaining",
         platform="diesel_heater",
         disabled_by=None,
+        config_entry_id="source-entry",
     )
     physical = SimpleNamespace(
         id="physical",
@@ -189,6 +197,7 @@ def test_renamed_estimates_do_not_become_physical_telemetry():
         unique_id="aa_case_temp",
         platform="diesel_heater",
         disabled_by=None,
+        config_entry_id="source-entry",
     )
     reg.entities.update({e.entity_id: e for e in [estimate, physical]})
     with (
@@ -198,7 +207,7 @@ def test_renamed_estimates_do_not_become_physical_telemetry():
             return_value=list(reg.entities.values()),
         ),
     ):
-        ids = source_telemetry_entity_ids(object(), "source")
+        ids = source_telemetry_entity_ids(source_hass(), "source")
     assert estimate.entity_id not in ids
     assert physical.entity_id in ids
 
@@ -207,9 +216,11 @@ def test_external_registry_id_resolves_new_name():
     reg = registry()
     with patch("custom_components.diesel_level_thermostat.source.er.async_get", return_value=reg):
         config = {"room_temperature": "sensor.new_room"}
-        config["entity_registry_ids"] = entity_registry_ids(object(), config)
+        config["entity_registry_ids"] = entity_registry_ids(source_hass(), config)
         reg.entities["sensor.new_room"].entity_id = "sensor.renamed"
-        assert resolve_entity_references(object(), config)["room_temperature"] == "sensor.renamed"
+        assert (
+            resolve_entity_references(source_hass(), config)["room_temperature"] == "sensor.renamed"
+        )
 
 
 @pytest.mark.parametrize("offset", [float("nan"), float("inf"), -21, 21, "invalid"])
@@ -217,8 +228,12 @@ async def test_options_reject_invalid_offset_without_saving(monkeypatch, offset)
     e = entry()
     monkeypatch.setattr(DieselLevelThermostatOptionsFlow, "config_entry", property(lambda _: e))
     flow = DieselLevelThermostatOptionsFlow()
-    result = await flow.async_step_init(
-        {"room_temperature": "sensor.room", "room_temperature_offset": offset}
-    )
+    flow.hass = source_hass()
+    with patch(
+        "custom_components.diesel_level_thermostat.source.er.async_get", return_value=registry()
+    ):
+        result = await flow.async_step_init(
+            {"room_temperature": "sensor.room", "room_temperature_offset": offset}
+        )
     assert result["type"] == "form"
     assert result["errors"]["room_temperature_offset"] == "invalid_offset"

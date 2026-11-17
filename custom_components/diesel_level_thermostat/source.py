@@ -47,6 +47,19 @@ _TELEMETRY_ENTITY_SUFFIXES = {
 }
 
 
+def _active_source_entry(hass: HomeAssistant, entry) -> bool:
+    """Ignore disabled or orphaned registry rows, not merely hidden entities."""
+    owner_id = getattr(entry, "config_entry_id", None)
+    owner = hass.config_entries.async_get_entry(owner_id) if owner_id else None
+    return (
+        owner is not None
+        and owner.domain == "diesel_heater"
+        and getattr(entry, "platform", None) == "diesel_heater"
+        and not getattr(entry, "disabled_by", None)
+        and getattr(entry, "orphaned_timestamp", None) is None
+    )
+
+
 def source_device_id(hass: HomeAssistant, control_entity_ids: Iterable[str]) -> str | None:
     """Return the common source device for the selected control entities."""
     registry = er.async_get(hass)
@@ -66,17 +79,24 @@ def source_telemetry_entity_ids(hass: HomeAssistant, device_id: str | None) -> t
         entry.entity_id
         for entry in er.async_entries_for_device(registry, device_id)
         if entry.domain in {"sensor", "binary_sensor"}
-        and getattr(entry, "platform", "diesel_heater") == "diesel_heater"
-        and not getattr(entry, "disabled_by", None)
+        and _active_source_entry(hass, entry)
         and not any(part in entry.unique_id for part in _ESTIMATE_ENTITY_PARTS)
     )
 
 
-def source_control_entity_ids(hass: HomeAssistant, device_id: str) -> dict[str, str] | None:
+def source_control_entity_ids(
+    hass: HomeAssistant, device_id: str, *, preferred_level: str | None = None
+) -> dict[str, str] | None:
     """Resolve the source integration's public Level-Mode control contract."""
     registry = er.async_get(hass)
-    entries = er.async_entries_for_device(registry, device_id)
+    entries = [
+        entry
+        for entry in er.async_entries_for_device(registry, device_id)
+        if _active_source_entry(hass, entry)
+    ]
     controls: dict[str, str] = {}
+    owner_id: str | None = None
+    stem: str | None = None
     for key, (domain, suffix) in _CONTROL_ENTITY_SUFFIXES.items():
         matches = [
             entry.entity_id
@@ -86,7 +106,33 @@ def source_control_entity_ids(hass: HomeAssistant, device_id: str) -> dict[str, 
             and getattr(entry, "platform", "diesel_heater") == "diesel_heater"
             and not getattr(entry, "disabled_by", None)
         ]
+        if key == CONF_HEATER_LEVEL:
+            power = next(
+                entry for entry in entries if entry.entity_id == controls[CONF_HEATER_POWER]
+            )
+            number_id = power.unique_id.removesuffix("_power") + "_level"
+            number_matches = [
+                entry.entity_id
+                for entry in entries
+                if entry.domain == "number"
+                and entry.unique_id == number_id
+                and getattr(entry, "platform", "diesel_heater") == "diesel_heater"
+                and not getattr(entry, "disabled_by", None)
+            ]
+            # Preserve an existing valid binding; otherwise prefer the fan.
+            # Never fall back because a live entity is unavailable: that may
+            # be the source integration's burn-off protection.
+            if len(number_matches) == 1 and (not matches or preferred_level == number_matches[0]):
+                matches = number_matches
         if len(matches) != 1:
+            return None
+        selected = next(entry for entry in entries if entry.entity_id == matches[0])
+        if key == CONF_HEATER_POWER:
+            owner_id = selected.config_entry_id
+            stem = selected.unique_id.removesuffix("_power")
+        elif selected.config_entry_id != owner_id or selected.unique_id != (
+            f"{stem}_level" if selected.domain == "number" else f"{stem}{suffix}"
+        ):
             return None
         controls[key] = matches[0]
     return controls
@@ -95,7 +141,11 @@ def source_control_entity_ids(hass: HomeAssistant, device_id: str) -> dict[str, 
 def source_telemetry_defaults(hass: HomeAssistant, device_id: str) -> dict[str, str]:
     """Resolve the physical telemetry the selected heater actually exposes."""
     registry = er.async_get(hass)
-    entries = er.async_entries_for_device(registry, device_id)
+    entries = [
+        entry
+        for entry in er.async_entries_for_device(registry, device_id)
+        if _active_source_entry(hass, entry)
+    ]
     defaults: dict[str, str] = {}
     for key, candidates in _TELEMETRY_ENTITY_SUFFIXES.items():
         for domain, suffix in candidates:
@@ -122,11 +172,15 @@ ENTITY_KEYS = (
 )
 
 
-def entity_registry_ids(hass: HomeAssistant, config: dict) -> dict[str, str]:
+def entity_registry_ids(
+    hass: HomeAssistant, config: dict, *, rebind: Iterable[str] = ()
+) -> dict[str, str]:
     """Persist registry identity so selected sensors survive entity-ID renames."""
     registry = er.async_get(hass)
     result = dict(config.get(CONF_ENTITY_REGISTRY_IDS, {}))
     for key in ENTITY_KEYS:
+        if key in result and key not in rebind:
+            continue
         entry = registry.async_get(config.get(key, ""))
         if entry is not None:
             result[key] = entry.id
