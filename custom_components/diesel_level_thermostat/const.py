@@ -9,6 +9,8 @@ DOMAIN: Final = "diesel_level_thermostat"
 CONF_ROOM_TEMPERATURE: Final = "room_temperature"
 CONF_ROOM_TEMPERATURE_OFFSET: Final = "room_temperature_offset"
 CONF_SOURCE_DEVICE_ID: Final = "source_device_id"
+# Internal binding metadata, not a user setting.
+CONF_SOURCE_BURNOFF_GUARD_REQUIRED: Final = "source_burnoff_guard_required"
 CONF_HEATER_POWER: Final = "heater_power"
 CONF_HEATER_LEVEL: Final = "heater_level"
 CONF_RUNNING_MODE: Final = "running_mode"

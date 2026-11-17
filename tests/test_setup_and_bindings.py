@@ -163,7 +163,7 @@ async def test_complete_user_flow_autopopulates_and_persists_registry_bindings()
         ),
         patch(
             "custom_components.diesel_level_thermostat.source.er.async_entries_for_device",
-            side_effect=lambda r, d: list(r.entities.values()),
+            side_effect=lambda r, d, **kwargs: list(r.entities.values()),
         ),
     ):
         result = await flow.async_step_user({"source_device_id": "source"})

@@ -13,12 +13,14 @@ from .const import (
     CONF_HEATER_LEVEL,
     CONF_HEATER_POWER,
     CONF_RUNNING_MODE,
+    CONF_SOURCE_BURNOFF_GUARD_REQUIRED,
     CONF_SOURCE_DEVICE_ID,
 )
 from .source import (
     ENTITY_KEYS,
     entity_registry_ids,
     resolve_entity_references,
+    source_control_contract,
     source_control_entity_ids,
     source_device_id,
 )
@@ -79,6 +81,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "Selected feedback entity identity cannot be resolved: " + ", ".join(sorted(missing))
         )
     data, options = dict(entry.data), dict(entry.options)
+    contract = source_control_contract(hass, device_id)
+    if contract and contract[2]:
+        data[CONF_SOURCE_BURNOFF_GUARD_REQUIRED] = True
+        options.pop(CONF_SOURCE_BURNOFF_GUARD_REQUIRED, None)
     if device_id:
         data[CONF_SOURCE_DEVICE_ID] = device_id
     for key, value in references.items():

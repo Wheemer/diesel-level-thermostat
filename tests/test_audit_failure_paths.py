@@ -240,3 +240,51 @@ async def test_new_heat_request_cancels_old_off_demand_without_unlocking_source(
     # may pass the still-locked source, including any startup request.
     assert not h.available
     services.async_call.assert_not_awaited()
+
+
+async def test_new_heat_request_cancels_older_off_waiting_for_lock():
+    h, services = controller()
+    h.hass.states._states["switch.heater_power"] = entity("on")
+    await h._control_lock.acquire()
+    off = asyncio.create_task(h.async_turn_off())
+    await asyncio.sleep(0)
+    heat = asyncio.create_task(h.async_turn_on())
+    await asyncio.sleep(0)
+    h._control_lock.release()
+    await asyncio.gather(off, heat)
+    assert h.hvac_mode == HVACMode.HEAT
+    assert ("switch", "turn_off") not in [c.args[:2] for c in services.async_call.await_args_list]
+
+
+async def test_invalid_target_in_unavailable_snapshot_never_restores_heat():
+    from types import SimpleNamespace
+
+    h, services = controller()
+    h._hvac_mode = HVACMode.OFF
+    h.async_get_last_state = AsyncMock(
+        return_value=SimpleNamespace(
+            state="unavailable",
+            attributes={
+                "control_hvac_mode": "heat",
+                "control_target_temperature": "nan",
+                "control_temperature_unit": "°C",
+            },
+        )
+    )
+    h.async_on_remove = MagicMock()
+    with (
+        patch(
+            "custom_components.diesel_level_thermostat.climate.source_device_id", return_value=None
+        ),
+        patch(
+            "custom_components.diesel_level_thermostat.climate.source_telemetry_entity_ids",
+            return_value=(),
+        ),
+        patch(
+            "custom_components.diesel_level_thermostat.climate.async_track_state_change_event",
+            return_value=lambda: None,
+        ),
+    ):
+        await h.async_added_to_hass()
+    assert h.hvac_mode == HVACMode.OFF
+    services.async_call.assert_not_awaited()

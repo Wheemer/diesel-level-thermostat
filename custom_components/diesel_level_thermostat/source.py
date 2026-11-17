@@ -93,11 +93,8 @@ def source_control_contract(
 ) -> tuple[dict[str, str], tuple[str, ...], tuple[str, ...]] | None:
     """Return same-owner/stem controls and optional public burn-off guards."""
     registry = er.async_get(hass)
-    entries = [
-        entry
-        for entry in er.async_entries_for_device(registry, device_id)
-        if _active_source_entry(hass, entry)
-    ]
+    all_entries = er.async_entries_for_device(registry, device_id, include_disabled_entities=True)
+    entries = [entry for entry in all_entries if _active_source_entry(hass, entry)]
     controls: dict[str, str] = {}
     selected = {}
     for key in (CONF_HEATER_POWER, CONF_RUNNING_MODE):
@@ -138,12 +135,21 @@ def source_control_contract(
         return None
     guards = tuple(
         e.entity_id
-        for e in entries
+        for e in all_entries
         if e.domain == "binary_sensor"
         and e.unique_id == f"{stem}_burnoff_active"
         and e.config_entry_id == power.config_entry_id
     )
     return controls, tuple(levels), guards
+
+
+def source_guards_enabled(hass: HomeAssistant, entity_ids: tuple[str, ...]) -> bool:
+    """A disabled or orphaned guard cannot be replaced by cached Off state."""
+    registry = er.async_get(hass)
+    return all(
+        (entry := registry.async_get(entity_id)) is not None and _active_source_entry(hass, entry)
+        for entity_id in entity_ids
+    )
 
 
 def select_level_entity(
@@ -176,7 +182,10 @@ def source_control_entity_ids(
         return None
     controls, candidates, guards = contract
     mode = hass.states.get(controls[CONF_RUNNING_MODE])
-    safe = bool(mode and mode.state in LEVEL_MODE_VALUES) and all(
+    safe = (
+        bool(mode and mode.state in LEVEL_MODE_VALUES)
+        and (not guards or source_guards_enabled(hass, guards))
+    ) and all(
         (state := hass.states.get(entity_id)) is not None and state.state == "off"
         for entity_id in guards
     )

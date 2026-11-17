@@ -358,3 +358,89 @@ async def test_removal_never_dispatches_deferred_off(source):
     h.hass.states._states["binary_sensor.burnoff"] = entity("off")
     await h._async_control()
     services.async_call.assert_not_awaited()
+
+
+async def test_disappearing_previously_seen_burnoff_guard_cannot_unlock_controls(source):
+    h, services, rows = source
+    h.hass.states._states["switch.heater_power"] = entity("on")
+    h.hass.states._states["binary_sensor.burnoff"] = entity("on")
+    assert not h.available
+    del rows["binary_sensor.burnoff"]
+    assert not h.available
+    await h._async_control()
+    with pytest.raises(HomeAssistantError):
+        await h.async_turn_off()
+    services.async_call.assert_not_awaited()
+
+
+async def test_disabled_known_guard_cannot_use_stale_off_state(source):
+    h, services, rows = source
+    assert h.available
+    rows["binary_sensor.burnoff"].disabled_by = "user"
+    assert not h.available
+    await h._async_control()
+    services.async_call.assert_not_awaited()
+
+
+async def test_known_guard_requirement_survives_reload_and_recovers_when_guard_returns(source):
+    from custom_components.diesel_level_thermostat.climate import DieselLevelThermostat
+
+    h, services, rows = source
+    config_entry = SimpleNamespace(
+        data=dict(h.config),
+        options={},
+        entry_id="test",
+        title="Test",
+        async_on_unload=MagicMock(),
+        add_update_listener=MagicMock(),
+    )
+    ce = h.hass.config_entries
+    ce.async_forward_entry_setups = AsyncMock()
+    ce.async_update_entry = MagicMock(
+        side_effect=lambda e, **kw: [setattr(e, k, v) for k, v in kw.items()]
+    )
+    h.hass.bus = SimpleNamespace(async_listen=MagicMock())
+    await async_setup_entry(h.hass, config_entry)
+    assert config_entry.data["source_burnoff_guard_required"] is True
+    guard = rows.pop("binary_sensor.burnoff")
+    h.hass.states._states["switch.heater_power"] = entity("on")
+    restored = DieselLevelThermostat(h.hass, config_entry)
+    restored.async_write_ha_state = lambda: None
+    assert not restored.available
+    with pytest.raises(HomeAssistantError):
+        await restored.async_turn_off()
+    services.async_call.assert_not_awaited()
+    rows[guard.entity_id] = guard
+    assert restored.available
+    await restored._async_control()
+    assert services.async_call.await_args.args[:2] == ("switch", "turn_off")
+
+
+@pytest.mark.parametrize("change", ["fault", "temperature", "burnoff", "native_mode"])
+async def test_changes_during_power_on_respect_latest_safety_and_ownership(source, change):
+    h, services, _ = source
+    states = h.hass.states._states
+    h.config["fault_sensor"] = "binary_sensor.problem"
+    states["binary_sensor.problem"] = entity("off")
+
+    async def send(domain, action, data, blocking):
+        if domain == "switch" and action == "turn_on":
+            states["switch.heater_power"] = entity("on")
+            if change == "fault":
+                states["binary_sensor.problem"] = entity("on")
+            elif change == "temperature":
+                states["sensor.room_temperature"] = entity("20", unit_of_measurement="°C")
+            elif change == "burnoff":
+                states["binary_sensor.burnoff"] = entity("on")
+                states["sensor.room_temperature"] = entity("20", unit_of_measurement="°C")
+            else:
+                states["select.heater_mode"] = entity("Temperature")
+
+    services.async_call.side_effect = send
+    await h._async_control()
+    calls = [c.args[:2] for c in services.async_call.await_args_list]
+    assert calls[:2] == [("number", "set_value"), ("switch", "turn_on")]
+    if change in {"fault", "temperature"}:
+        assert calls[2:] == [("switch", "turn_off")]
+    else:
+        assert len(calls) == 2  # Never interrupt burn-off or commandeer native mode.

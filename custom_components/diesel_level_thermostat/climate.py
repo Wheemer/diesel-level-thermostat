@@ -47,6 +47,7 @@ from .const import (
     CONF_ROOM_TEMPERATURE,
     CONF_ROOM_TEMPERATURE_OFFSET,
     CONF_RUNNING_MODE,
+    CONF_SOURCE_BURNOFF_GUARD_REQUIRED,
     CONF_SOURCE_DEVICE_ID,
     CONF_VOLTAGE_SENSOR,
     DEFAULT_MIN_LEVEL,
@@ -63,6 +64,7 @@ from .source import (
     source_binding_identity,
     source_control_contract,
     source_device_id,
+    source_guards_enabled,
     source_telemetry_entity_ids,
 )
 
@@ -118,6 +120,7 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         self._control_lock = asyncio.Lock()
         self._source_device_id = self.config.get(CONF_SOURCE_DEVICE_ID)
         self._source_telemetry: tuple[str, ...] = ()
+        self._burnoff_guard_required = bool(self.config.get(CONF_SOURCE_BURNOFF_GUARD_REQUIRED))
         self._removed = False
         self._control_tasks: set[asyncio.Task] = set()
         self._event_task: asyncio.Task | None = None
@@ -177,11 +180,16 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
     def _level_context(self):
         """Rediscover only the validated contract; never trust an alternate name."""
         if not self._source_device_id:
+            if self._burnoff_guard_required:
+                return None
             return (self.config[CONF_HEATER_LEVEL],), ()
         contract = source_control_contract(self.hass, self._source_device_id)
         if contract is None:
             return None
         controls, candidates, guards = contract
+        self._burnoff_guard_required = self._burnoff_guard_required or bool(guards)
+        if self._burnoff_guard_required and not guards:
+            return None
         if (
             controls[CONF_HEATER_POWER] != self.config[CONF_HEATER_POWER]
             or controls[CONF_RUNNING_MODE] != self.config[CONF_RUNNING_MODE]
@@ -191,9 +199,13 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
 
     def _burnoff_blocked(self) -> bool:
         context = self._level_context()
-        return context is None or any(
-            not (state := self.hass.states.get(entity_id)) or state.state != STATE_OFF
-            for entity_id in context[1]
+        return (
+            context is None
+            or (bool(context[1]) and not source_guards_enabled(self.hass, context[1]))
+            or any(
+                not (state := self.hass.states.get(entity_id)) or state.state != STATE_OFF
+                for entity_id in context[1]
+            )
         )
 
     def _level_entity_id(self) -> str:
@@ -344,7 +356,10 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
                 restored = TemperatureConverter.convert(restored, unit, self._attr_temperature_unit)
             if restored is not None and self.min_temp <= restored <= self.max_temp:
                 self._target_temperature = restored
-            elif old_state.attributes.get(ATTR_TEMPERATURE) is not None:
+            elif (
+                old_state.attributes.get(ATTR_TEMPERATURE) is not None
+                or "control_target_temperature" in old_state.attributes
+            ):
                 self._hvac_mode = HVACMode.OFF
                 _LOGGER.warning("Invalid restored target; leaving virtual heating off")
         if self._target_temperature is None:
@@ -452,7 +467,7 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         self.async_write_ha_state()
         if hvac_mode == HVACMode.OFF:
             async with self._control_lock:
-                if self._removed:
+                if self._removed or self._hvac_mode != HVACMode.OFF:
                     return
                 if not await self._turn_source_off("virtual thermostat turned off"):
                     self.async_write_ha_state()
@@ -546,8 +561,24 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
                     except HomeAssistantError:
                         self._power_on_pending = False
                         raise
-                    if not self._removed and self._hvac_mode == HVACMode.OFF:
+                    if self._removed:
+                        return
+                    if self._hvac_mode == HVACMode.OFF:
                         await self._turn_source_off("virtual thermostat turned off during startup")
+                    else:
+                        mode = self.hass.states.get(self.config[CONF_RUNNING_MODE])
+                        # A native mode takeover suspends our ownership. While
+                        # still in Level mode, recheck demand and safety after
+                        # the power service yields, just as for level writes.
+                        if mode and self._is_level_mode(mode.state):
+                            temperature = self.current_temperature
+                            if self._safety_blocked() or temperature is None:
+                                await self._turn_source_off("feedback changed during startup")
+                            elif self._target_temperature is not None and (
+                                self._to_celsius(temperature)
+                                >= self._to_celsius(self._target_temperature)
+                            ):
+                                await self._turn_source_off("target reached during startup")
                 if not self._removed:
                     self.async_write_ha_state()
         finally:
