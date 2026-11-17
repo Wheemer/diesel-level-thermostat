@@ -7,8 +7,7 @@
 
 ### Staged Level-Mode climate control for diesel heaters in Home Assistant
 
-[![HACS Custom](https://img.shields.io/badge/HACS-CUSTOM-FD7E14?style=for-the-badge&logo=home-assistant&logoColor=white&labelColor=555555)](https://github.com/hacs/integration)
-[![Home Assistant Custom Integration](https://img.shields.io/badge/HOME%20ASSISTANT-CUSTOM%20INTEGRATION-41BDF5?style=for-the-badge&logo=home-assistant&logoColor=white&labelColor=555555)](https://www.home-assistant.io/)
+[![HACS Custom Integration](https://img.shields.io/badge/HACS-Custom%20Integration-41BDF5?style=for-the-badge&logo=home-assistant&logoColor=white&labelColor=555555)](#install)
 [![Latest release](https://img.shields.io/github/v/release/Wheemer/diesel-level-thermostat?style=for-the-badge&logo=github&logoColor=white&label=RELEASE&labelColor=555555&color=22C55E)](https://github.com/Wheemer/diesel-level-thermostat/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/Wheemer/diesel-level-thermostat/total?style=for-the-badge&logo=github&logoColor=white&label=DOWNLOADS&labelColor=555555&color=8A2BE2)](https://github.com/Wheemer/diesel-level-thermostat/releases)
 [![Climate platform](https://img.shields.io/badge/PLATFORM-CLIMATE-22C55E?style=for-the-badge&logo=home-assistant&logoColor=white&labelColor=555555)](https://www.home-assistant.io/integrations/climate/)
@@ -30,7 +29,7 @@ integration; it does not communicate with the heater over BLE itself.
 
 | Capability | Behavior |
 |---|---|
-| **Level-mode climate control** | Calculates a heating level using the source fan’s supported speed steps. |
+| **Level-mode climate control** | Calculates a heating level using the selected level control’s supported steps. |
 | **Corrected feedback** | Uses any Home Assistant temperature sensor and an optional local Celsius offset. |
 | **Stable control** | Selects the calculated demand directly and reduces it as the room approaches target. |
 | **Safety gates** | Stops only through the heater’s normal Power entity and honors configured fault, voltage, and thermal limits. |
@@ -40,8 +39,8 @@ integration; it does not communicate with the heater over BLE itself.
 
 The setup flow binds to an existing Diesel Heater device rather than talking to BLE itself:
 
-- required: room temperature, power switch, heater-level fan, and running-mode
-  entity;
+- required: room temperature, power switch, running-mode selector, and either
+  a compatible Heater Level fan or Level number;
 - an automatically detected fault binary sensor, when provided by the source;
 - physical telemetry attributes, including supply voltage, case temperature,
   and supported probes. Existing saved thermal/voltage limits are preserved;
@@ -60,8 +59,8 @@ they are not hardware measurements and never affect control.
 
 The underlying heater integration remains responsible for BLE transport,
 protocol support, burn-off, and its own hardware protections. In particular,
-the source level fan is unavailable during burn-off; that availability is a
-hard gate for this controller.
+source level controls are locked during burn-off; selecting an alternate
+control never bypasses that protection.
 
 Altitude is intentionally not fed into the control calculation. It is a
 heater-side combustion configuration, not a changing measurement for room
