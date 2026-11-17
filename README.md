@@ -58,14 +58,12 @@ The offset is in Celsius and affects only this thermostat’s feedback.
 The heater’s native Temperature Mode remains under the original integration.
 This thermostat is unavailable outside Level Mode.
 
-## Controller Compatibility
+## Compatibility
 
-Supports compatible AA55/AA66, ABBA/HeaterCC, CBFF/Sunster, Hcalory MVP,
-HeatGenie/Boygu and Warm Drive air controllers through their source entities.
-Available controls determine compatibility; ventilation speeds are not heating levels.
+Works with heaters supported by the [Diesel Heater integration](https://github.com/Spettacolo83/homeassistant-diesel-heater)
+that provide Level-mode heating control.
 
-See the [controller and control reference](docs/REFERENCE.md) for requirements,
-family-specific limitations, control behavior and unavailable-state diagnostics.
+See the [control reference](docs/REFERENCE.md) for detailed behavior and troubleshooting.
 
 Use normal heater shutdown rather than cutting electrical power. Check startup
 and shutdown with the heater attended before relying on automatic control.
