@@ -199,6 +199,30 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         return self._source_ready() and self.current_temperature is not None
 
     @property
+    def capability_attributes(self) -> dict[str, Any]:
+        """Keep binding diagnostics visible while HA marks this entity unavailable."""
+        attributes = dict(super().capability_attributes or {})
+        diagnostics = self.extra_state_attributes
+        for key in (
+            "source_power",
+            "source_level",
+            "source_mode",
+            "source_room_temperature",
+            "unavailable_reason",
+        ):
+            attributes[key] = diagnostics[key]
+        attributes["source_states"] = {
+            key: {
+                "state": state.state if state else None,
+                "attributes": dict(state.attributes) if state else {},
+            }
+            for key in ("source_power", "source_level", "source_mode", "source_room_temperature")
+            if (entity_id := diagnostics[key])
+            and (state := self.hass.states.get(entity_id)) is not None
+        }
+        return attributes
+
+    @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Expose the source entities that drive this controller."""
         attributes: dict[str, Any] = {
