@@ -12,6 +12,7 @@ from homeassistant.const import (
     STATE_UNAVAILABLE,
     UnitOfTemperature,
 )
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.diesel_level_thermostat.climate import DieselLevelThermostat
 from custom_components.diesel_level_thermostat.const import (
@@ -257,7 +258,8 @@ async def test_burnoff_and_unavailable_source_remain_hard_gates() -> None:
     thermostat, services = controller()
     thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
     thermostat.hass.states._states["fan.heater_level"] = entity(STATE_UNAVAILABLE)
-    await thermostat.async_turn_off()
+    with pytest.raises(HomeAssistantError, match="shutdown is pending"):
+        await thermostat.async_turn_off()
     assert not thermostat.available
     services.async_call.assert_not_awaited()
 

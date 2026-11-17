@@ -45,6 +45,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         device_id,
         preferred_level=references.get(CONF_HEATER_LEVEL, config.get(CONF_HEATER_LEVEL)),
     )
+    if controls is None and all(
+        key in references for key in (CONF_HEATER_POWER, CONF_HEATER_LEVEL, CONF_RUNNING_MODE)
+    ):
+        recovered_device = source_device_id(
+            hass,
+            (references[key] for key in (CONF_HEATER_POWER, CONF_HEATER_LEVEL, CONF_RUNNING_MODE)),
+        )
+        if recovered_device and recovered_device != device_id:
+            recovered = source_control_entity_ids(
+                hass, recovered_device, preferred_level=references[CONF_HEATER_LEVEL]
+            )
+            if recovered and all(
+                recovered[key] == references[key] for key in (CONF_HEATER_POWER, CONF_RUNNING_MODE)
+            ):
+                device_id, controls = recovered_device, recovered
     if controls is None:
         raise ConfigEntryNotReady(
             "Selected heater has missing, disabled, or ambiguous "
@@ -80,21 +95,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def update_options(hass: HomeAssistant, updated: ConfigEntry) -> None:
         await hass.config_entries.async_reload(updated.entry_id)
 
+    registry_reload_in_progress = False
+
     async def registry_changed(event) -> None:
+        nonlocal registry_reload_in_progress
         entity_id = event.data.get("entity_id")
-        registry_entry = er.async_get(hass).async_get(entity_id)
-        selected = {**entry.data, **entry.options}
-        old_id = event.data.get("changes", {}).get("entity_id")
-        if (
-            entity_id in {selected.get(key) for key in ENTITY_KEYS}
-            or old_id in {selected.get(key) for key in ENTITY_KEYS if selected.get(key)}
-            or (
-                selected.get(CONF_SOURCE_DEVICE_ID)
-                and registry_entry is not None
-                and registry_entry.device_id == selected[CONF_SOURCE_DEVICE_ID]
-            )
+        if not entity_id:
+            return
+        changes = event.data.get("changes") or {}
+        if event.data.get("action") == "update" and not any(
+            key in changes
+            for key in ("entity_id", "disabled_by", "device_id", "config_entry_id", "unique_id")
         ):
-            await hass.config_entries.async_reload(entry.entry_id)
+            return
+        registry = er.async_get(hass)
+        row = registry.async_get(entity_id)
+        selected = {**entry.data, **entry.options}
+        selected_ids = {selected[key] for key in ENTITY_KEYS if selected.get(key)}
+        relevant = entity_id in selected_ids or changes.get("entity_id") in selected_ids
+        power = registry.async_get(selected.get(CONF_HEATER_POWER, ""))
+        if not relevant and row is not None and power is not None:
+            stem = power.unique_id.removesuffix("_power")
+            relevant = (
+                row.device_id == selected.get(CONF_SOURCE_DEVICE_ID)
+                and row.config_entry_id == power.config_entry_id
+                and row.platform == "diesel_heater"
+                and row.unique_id
+                in {stem + "_heater_level", stem + "_level", stem + "_burnoff_active"}
+            )
+        if relevant and not registry_reload_in_progress:
+            registry_reload_in_progress = True
+            try:
+                await hass.config_entries.async_reload(entry.entry_id)
+            finally:
+                registry_reload_in_progress = False
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(update_options))

@@ -26,7 +26,8 @@
       "already_configured": "This heater is already configured.",
       "unsupported_source_device": "This device needs enabled Power and Running Mode controls, plus a Heater Level fan or Level number.",
       "invalid_offset": "Enter a finite offset between -20 and 20 Celsius.",
-      "invalid_sensor": "Choose a temperature sensor."
+      "invalid_sensor": "Choose a temperature sensor.",
+      "invalid_room_temperature": "Choose an existing sensor with a valid numeric temperature and temperature unit."
     },
     "abort": {
       "already_configured": "This heater is already configured."
@@ -36,7 +37,7 @@
     "step": {
       "init": {
         "title": "Room feedback",
-        "description": "Choose the temperature sensor that controls this thermostat. The heater's interior temperature is selected by default. Deleted safety sensor identities appear only when they need explicit reselection; saved limits are preserved.",
+        "description": "Choose the room sensor and local correction. Missing safety sensors can be repaired below or left unchanged; leaving a repair pending does not disable its protection.",
         "data": {
           "room_temperature": "Room temperature",
           "room_temperature_offset": "Room temperature offset (C)",
@@ -53,7 +54,9 @@
     },
     "error": {
       "invalid_offset": "Enter a finite offset between -20 and 20 Celsius.",
-      "invalid_sensor": "Choose a temperature sensor."
+      "invalid_sensor": "Choose a temperature sensor.",
+      "invalid_safety_sensor": "Choose the matching sensor from this heater with the correct measurement type.",
+      "invalid_room_temperature": "Choose an existing sensor with a valid numeric temperature and temperature unit."
     }
   }
 }

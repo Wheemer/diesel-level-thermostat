@@ -8,7 +8,16 @@ def source_hass(**kwargs):
     config_entries.async_get_entry = lambda owner: (
         SimpleNamespace(domain="diesel_heater") if owner == "source-entry" else None
     )
-    kwargs.setdefault("states", SimpleNamespace(get=lambda _: None))
+    kwargs.setdefault(
+        "states",
+        SimpleNamespace(
+            get=lambda name: (
+                SimpleNamespace(state="20", attributes={"unit_of_measurement": "°C"})
+                if name in {"sensor.new_room", "sensor.external", "sensor.room"}
+                else None
+            )
+        ),
+    )
     return SimpleNamespace(config_entries=config_entries, **kwargs)
 
 

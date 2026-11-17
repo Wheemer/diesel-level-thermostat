@@ -8,7 +8,9 @@ from typing import Any
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_NAME
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import selector
+from homeassistant.util.unit_conversion import TemperatureConverter
 
 from .const import (
     CONF_ENTITY_REGISTRY_IDS,
@@ -25,6 +27,7 @@ from .const import (
 from .source import (
     entity_registry_ids,
     resolve_entity_references,
+    source_control_contract,
     source_control_entity_ids,
     source_telemetry_defaults,
 )
@@ -75,16 +78,19 @@ def options_schema(
                 default=offset,
             ): _number_selector(-20, 20, 0.1),
             **{
-                vol.Required(key, default=value): _entity_selector(
-                    "binary_sensor" if key == CONF_FAULT_SENSOR else "sensor"
+                vol.Optional(key): _entity_selector(
+                    "binary_sensor" if key == CONF_FAULT_SENSOR else "sensor",
+                    "problem"
+                    if key == CONF_FAULT_SENSOR
+                    else ("voltage" if key == "voltage_sensor" else "temperature"),
                 )
-                for key, value in (repair_entities or {}).items()
+                for key in (repair_entities or {})
             },
         }
     )
 
 
-def feedback_errors(values: dict[str, Any]) -> dict[str, str]:
+def feedback_errors(values: dict[str, Any], hass) -> dict[str, str]:
     """Reject invalid feedback settings before persisting a flow result."""
     errors = {}
     try:
@@ -96,7 +102,64 @@ def feedback_errors(values: dict[str, Any]) -> dict[str, str]:
     room = values.get(CONF_ROOM_TEMPERATURE)
     if not isinstance(room, str) or not room.startswith("sensor."):
         errors[CONF_ROOM_TEMPERATURE] = "invalid_sensor"
+    elif (state := hass.states.get(room)) is None:
+        errors[CONF_ROOM_TEMPERATURE] = "invalid_room_temperature"
+    else:
+        try:
+            value = float(state.state)
+            valid = math.isfinite(value)
+        except (TypeError, ValueError):
+            valid = False
+        if (
+            not valid
+            or state.attributes.get("unit_of_measurement") not in TemperatureConverter.VALID_UNITS
+            or state.attributes.get("device_class") not in (None, "temperature")
+        ):
+            errors[CONF_ROOM_TEMPERATURE] = "invalid_room_temperature"
     return errors
+
+
+def valid_safety_repair(hass, config: dict, key: str, entity_id: str) -> bool:
+    """Accept only the original physical quantity from this source heater."""
+    contract = source_control_contract(hass, config.get(CONF_SOURCE_DEVICE_ID, ""))
+    if contract is None or not isinstance(entity_id, str):
+        return False
+    registry = er.async_get(hass)
+    power = registry.async_get(contract[0]["heater_power"])
+    candidate = registry.async_get(entity_id)
+    suffixes = {
+        "fault_sensor": "problem",
+        "voltage_sensor": "supply_voltage",
+        "case_temperature": "case_temp",
+        "exhaust_temperature": "outlet_temperature",
+    }
+    if (
+        not power
+        or not candidate
+        or candidate.platform != "diesel_heater"
+        or candidate.config_entry_id != power.config_entry_id
+        or candidate.device_id != power.device_id
+        or candidate.disabled_by
+        or getattr(candidate, "orphaned_timestamp", None) is not None
+        or candidate.unique_id != power.unique_id.removesuffix("_power") + "_" + suffixes[key]
+    ):
+        return False
+    state = hass.states.get(entity_id)
+    if state is None:
+        return False
+    if key == CONF_FAULT_SENSOR:
+        return (
+            candidate.domain == "binary_sensor"
+            and state.attributes.get("device_class") == "problem"
+        )
+    if candidate.domain != "sensor":
+        return False
+    if key == "voltage_sensor":
+        return (
+            state.attributes.get("device_class") == "voltage"
+            and state.attributes.get("unit_of_measurement") == "V"
+        )
+    return state.attributes.get("unit_of_measurement") in TemperatureConverter.VALID_UNITS
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -133,7 +196,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.ConfigFlowResult:
         """Select the room and optional safety telemetry."""
         if user_input is not None:
-            if errors := feedback_errors(user_input):
+            if errors := feedback_errors(user_input, self.hass):
                 return self.async_show_form(
                     step_id="telemetry", data_schema=self._telemetry_schema(), errors=errors
                 )
@@ -193,17 +256,15 @@ class DieselLevelThermostatOptionsFlow(config_entries.OptionsFlow):
             repair_entities=repairs,
         )
         if user_input is not None:
-            errors = feedback_errors(user_input)
-            for key in repairs:
-                domain = "binary_sensor." if key == CONF_FAULT_SENSOR else "sensor."
-                if not isinstance(user_input.get(key), str) or not user_input[key].startswith(
-                    domain
-                ):
-                    errors[key] = "invalid_sensor"
+            errors = feedback_errors(user_input, self.hass)
+            selected_repairs = {key for key in repairs if key in user_input}
+            for key in selected_repairs:
+                if not valid_safety_repair(self.hass, saved, key, user_input[key]):
+                    errors[key] = "invalid_safety_sensor"
             if errors:
                 return self.async_show_form(
                     step_id="init",
-                    data_schema=schema,
+                    data_schema=self.add_suggested_values_to_schema(schema, user_input),
                     errors=errors,
                 )
             config = {**saved, **user_input}
@@ -211,7 +272,7 @@ class DieselLevelThermostatOptionsFlow(config_entries.OptionsFlow):
             options[CONF_ENTITY_REGISTRY_IDS] = entity_registry_ids(
                 self.hass,
                 config,
-                rebind=(CONF_ROOM_TEMPERATURE, *repairs),
+                rebind=(CONF_ROOM_TEMPERATURE, *selected_repairs),
             )
             return self.async_create_entry(title="", data=options)
         suggestions = dict(self.config_entry.options)

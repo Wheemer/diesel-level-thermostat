@@ -30,6 +30,7 @@ _ESTIMATE_ENTITY_PARTS = (
     "fuel_remaining",
     "last_refueled",
     "fuel_consumed",
+    "est_fuel_since_refuel",
     "daily_runtime",
     "total_runtime",
 )
@@ -207,6 +208,15 @@ def source_telemetry_defaults(hass: HomeAssistant, device_id: str) -> dict[str, 
         for entry in er.async_entries_for_device(registry, device_id)
         if _active_source_entry(hass, entry)
     ]
+    powers = [
+        entry
+        for entry in entries
+        if entry.domain == "switch" and entry.unique_id.endswith("_power")
+    ]
+    if len(powers) != 1:
+        return {}
+    owner = powers[0].config_entry_id
+    stem = powers[0].unique_id.removesuffix("_power")
     defaults: dict[str, str] = {}
     for key, candidates in _TELEMETRY_ENTITY_SUFFIXES.items():
         for domain, suffix in candidates:
@@ -214,7 +224,8 @@ def source_telemetry_defaults(hass: HomeAssistant, device_id: str) -> dict[str, 
                 entry.entity_id
                 for entry in entries
                 if entry.domain == domain
-                and entry.unique_id.endswith(suffix)
+                and entry.unique_id == stem + suffix
+                and entry.config_entry_id == owner
                 and getattr(entry, "platform", "diesel_heater") == "diesel_heater"
                 and not getattr(entry, "disabled_by", None)
             ]

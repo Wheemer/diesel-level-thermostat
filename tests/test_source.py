@@ -63,6 +63,11 @@ def test_source_telemetry_excludes_local_estimates() -> None:
             unique_id="device_total_runtime",
         ),
         source_row(
+            entity_id="sensor.since_refuel",
+            domain="sensor",
+            unique_id="device_est_fuel_since_refuel",
+        ),
+        source_row(
             entity_id="binary_sensor.diesel_heater_problem",
             domain="binary_sensor",
             unique_id="device_problem",
@@ -154,6 +159,7 @@ def test_source_telemetry_defaults_follow_available_heater_probes() -> None:
     """Heater telemetry is populated from supported source entities."""
     registry = object()
     entries = (
+        source_row(entity_id="switch.power", domain="switch", unique_id="aa_power"),
         source_row(entity_id="sensor.interior", domain="sensor", unique_id="aa_cab_temp"),
         source_row(entity_id="sensor.case", domain="sensor", unique_id="aa_case_temp"),
         source_row(

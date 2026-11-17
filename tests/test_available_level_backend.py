@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.components.climate import HVACMode
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.diesel_level_thermostat import async_setup_entry
 from custom_components.diesel_level_thermostat.source import source_control_entity_ids
@@ -141,7 +142,8 @@ async def test_both_unavailable_never_write_or_interfere_with_shutdown(source, s
     )
     assert result.attributes["source_candidate_states"]["number.level"]["state"] == state
     await h._async_control()
-    await h.async_turn_off()
+    with pytest.raises(HomeAssistantError, match="shutdown is pending"):
+        await h.async_turn_off()
     services.async_call.assert_not_awaited()
 
 
@@ -166,7 +168,8 @@ async def test_burnoff_guard_blocks_stale_available_alternate(source, guard):
     h.hass.states._states["switch.heater_power"] = entity("on")
     assert not h.available
     await h._async_control()
-    await h.async_turn_off()
+    with pytest.raises(HomeAssistantError, match="shutdown is pending"):
+        await h.async_turn_off()
     services.async_call.assert_not_awaited()
 
 
@@ -319,3 +322,39 @@ async def test_startup_subscribes_to_absent_candidate_state_and_resumes_on_arriv
     await h._event_task
     assert services.async_call.await_args_list[0].args[:2] == ("number", "set_value")
     assert services.async_call.await_args_list[1].args[:2] == ("switch", "turn_on")
+
+
+async def test_pending_off_waits_for_burnoff_and_valid_public_control(source):
+    h, services, _ = source
+    states = h.hass.states._states
+    h.hass.async_create_task = asyncio.create_task
+    states["switch.heater_power"] = entity("on")
+    states["binary_sensor.burnoff"] = entity("on")
+    with pytest.raises(HomeAssistantError, match="shutdown is pending"):
+        await h.async_turn_off()
+    assert h.capability_attributes["shutdown_pending"]
+    h._async_source_changed(None)
+    await h._event_task
+    services.async_call.assert_not_awaited()
+    states["binary_sensor.burnoff"] = entity("off")
+    states["number.level"] = entity("unavailable")
+    h._async_source_changed(None)
+    await h._event_task
+    services.async_call.assert_not_awaited()
+    states["number.level"] = entity("1", min=1, max=10, step=1)
+    h._async_source_changed(None)
+    await h._event_task
+    assert [c.args[:2] for c in services.async_call.await_args_list] == [("switch", "turn_off")]
+    assert h.hvac_mode == HVACMode.OFF
+
+
+async def test_removal_never_dispatches_deferred_off(source):
+    h, services, _ = source
+    h.hass.states._states["switch.heater_power"] = entity("on")
+    h.hass.states._states["binary_sensor.burnoff"] = entity("on")
+    with pytest.raises(HomeAssistantError):
+        await h.async_turn_off()
+    await h.async_will_remove_from_hass()
+    h.hass.states._states["binary_sensor.burnoff"] = entity("off")
+    await h._async_control()
+    services.async_call.assert_not_awaited()

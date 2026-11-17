@@ -124,6 +124,9 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         self._control_dirty = False
         self._power_on_pending = False
         self._selected_level_entity: str | None = None
+        self._shutdown_pending = False
+        self._shutdown_block_reason: str | None = None
+        self._last_control_error: str | None = None
 
     @property
     def hvac_mode(self) -> HVACMode:
@@ -245,6 +248,12 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             "source_mode",
             "source_room_temperature",
             "unavailable_reason",
+            "shutdown_pending",
+            "control_hvac_mode",
+            "control_target_temperature",
+            "control_temperature_unit",
+            "shutdown_block_reason",
+            "last_control_error",
         ):
             attributes[key] = diagnostics[key]
         attributes["source_level_candidates"] = diagnostics["source_level_candidates"]
@@ -284,6 +293,9 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             "source_room_temperature": self.config[CONF_ROOM_TEMPERATURE],
             "unavailable_reason": self._source_unavailable_reason()
             or ("room_temperature_invalid" if self.current_temperature is None else None),
+            "shutdown_pending": self._shutdown_pending,
+            "shutdown_block_reason": self._shutdown_block_reason,
+            "last_control_error": self._last_control_error,
             "control_active": self.available and self._hvac_mode == HVACMode.HEAT,
             "room_temperature_offset_c": self.config.get(
                 CONF_ROOM_TEMPERATURE_OFFSET, DEFAULT_ROOM_TEMPERATURE_OFFSET
@@ -302,6 +314,10 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         """Restore user state and subscribe to selected source telemetry."""
         if old_state := await self.async_get_last_state():
             restored_mode = old_state.attributes.get("control_hvac_mode", old_state.state)
+            self._shutdown_pending = (
+                restored_mode == HVACMode.OFF
+                and old_state.attributes.get("shutdown_pending") is True
+            )
             if restored_mode in (HVACMode.HEAT, HVACMode.OFF):
                 self._hvac_mode = HVACMode(restored_mode)
             restored = self._finite_number(
@@ -363,7 +379,13 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
                 self.hass, sorted(set(watched)), self._async_source_changed
             )
         )
-        await self._async_control()
+        try:
+            await self._async_control()
+        except HomeAssistantError as err:
+            self._last_control_error = str(err)
+            _LOGGER.exception(
+                "Initial source control failed; thermostat remains registered for recovery"
+            )
 
     async def async_will_remove_from_hass(self) -> None:
         """Stop owned work before removal; never dispatch a late source command."""
@@ -390,12 +412,20 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             self._event_task.add_done_callback(self._control_tasks.discard)
 
     async def _async_event_control(self) -> None:
-        try:
-            while self._control_dirty and not self._removed:
-                self._control_dirty = False
+        while self._control_dirty and not self._removed:
+            self._control_dirty = False
+            try:
                 await self._async_control()
-        except HomeAssistantError:
-            _LOGGER.exception("Source heater service failed; waiting for the next state update")
+                self._last_control_error = None
+            except HomeAssistantError as err:
+                self._last_control_error = str(err)
+                _LOGGER.exception(
+                    "Source heater service failed; pending state updates remain eligible"
+                )
+            # Only drain events that actually arrived during this pass. A
+            # failure alone never schedules a retry or creates a busy loop.
+            if not self._removed:
+                self.async_write_ha_state()
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set the virtual target without touching native temperature mode."""
@@ -416,10 +446,20 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         if self._removed:
             return
         self._hvac_mode = hvac_mode
+        if hvac_mode == HVACMode.HEAT:
+            self._shutdown_pending = False
+            self._shutdown_block_reason = None
         self.async_write_ha_state()
         if hvac_mode == HVACMode.OFF:
             async with self._control_lock:
-                await self._turn_source_off("virtual thermostat turned off")
+                if self._removed:
+                    return
+                if not await self._turn_source_off("virtual thermostat turned off"):
+                    self.async_write_ha_state()
+                    raise HomeAssistantError(
+                        "Heating demand is Off, but heater shutdown is pending: "
+                        + (self._shutdown_block_reason or "source unavailable")
+                    )
         else:
             await self._async_control()
         if not self._removed:
@@ -439,7 +479,11 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         self._control_tasks.add(task)
         try:
             async with self._control_lock:
-                if self._removed or self._hvac_mode != HVACMode.HEAT:
+                if self._removed:
+                    return
+                if self._hvac_mode != HVACMode.HEAT:
+                    if self._shutdown_pending:
+                        await self._turn_source_off("pending virtual Off request")
                     return
                 mode = self.hass.states.get(self.config[CONF_RUNNING_MODE])
                 if not mode or not self._is_level_mode(mode.state):
@@ -463,6 +507,8 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
                 if control_temperature >= control_target:
                     await self._turn_source_off("target temperature reached")
                     return
+                self._shutdown_pending = False
+                self._shutdown_block_reason = None
                 demand_level = target_level(
                     current_temperature=control_temperature,
                     target_temperature=control_target,
@@ -581,17 +627,41 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         level = self.hass.states.get(self._level_entity_id())
         return bool(level and level.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN))
 
-    async def _turn_source_off(self, reason: str) -> None:
-        """Request normal heater shutdown without interrupting burn-off."""
-        if (
-            self._removed
-            or not (self._is_source_on() or self._power_on_pending)
-            or not self._can_request_source_shutdown()
-        ):
-            return
+    async def _turn_source_off(self, reason: str) -> bool:
+        """Request normal shutdown, retaining a blocked demand for source events."""
+        if self._removed:
+            return False
+        if not (self._is_source_on() or self._power_on_pending):
+            power = self.hass.states.get(self.config[CONF_HEATER_POWER])
+            if power and power.state == STATE_OFF:
+                self._shutdown_pending = False
+                self._shutdown_block_reason = None
+                return True
+        self._shutdown_pending = True
+        if not self._can_request_source_shutdown():
+            self._shutdown_block_reason = (
+                self._source_unavailable_reason() or "source_shutdown_locked"
+            )
+            _LOGGER.warning("Shutdown deferred (%s): %s", reason, self._shutdown_block_reason)
+            return False
+        power = self.hass.states.get(self.config[CONF_HEATER_POWER])
+        if not power or power.state not in (STATE_ON, STATE_OFF):
+            self._shutdown_block_reason = "source_power_unavailable"
+            _LOGGER.warning("Shutdown deferred (%s): source Power is unavailable", reason)
+            return False
+        self._shutdown_block_reason = None
         _LOGGER.info("Requesting source heater shutdown: %s", reason)
-        await self._call_source("switch", "turn_off", self.config[CONF_HEATER_POWER])
+        try:
+            await self._call_source("switch", "turn_off", self.config[CONF_HEATER_POWER])
+        except HomeAssistantError:
+            self._shutdown_block_reason = "source_shutdown_failed"
+            raise
         self._power_on_pending = False
+        # Service completion is not physical confirmation; retain pending
+        # until the source reports Off, without issuing timed retries.
+        reported_power = self.hass.states.get(self.config[CONF_HEATER_POWER])
+        self._shutdown_pending = not reported_power or reported_power.state != STATE_OFF
+        return True
 
     async def _call_source(self, domain: str, service: str, entity_id: str, **data: Any) -> None:
         """Call a source entity through Home Assistant's public service API."""
@@ -631,8 +701,10 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         if limit is None:
             return True
         entity_id = self.config.get(entity_key)
-        if not limit or not entity_id:
+        if not limit:
             return False
+        if not entity_id:
+            return True
         state = self.hass.states.get(entity_id)
         value = self._finite_number(state.state) if state else None
         return value is None or value < limit

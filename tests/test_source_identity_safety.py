@@ -13,6 +13,7 @@ from custom_components.diesel_level_thermostat.source import (
     source_control_entity_ids,
 )
 from tests.source_fixtures import source_hass, source_row
+from tests.test_climate import entity
 from tests.test_setup_and_bindings import entry, registry
 
 
@@ -131,11 +132,28 @@ async def test_deleted_identity_blocks_replacement_but_options_reselection_recov
         id="replacement",
         entity_id=old_name,
         domain=domain,
-        unique_id="replacement",
-        device_id="external",
+        unique_id="aa_"
+        + {
+            "room_temperature": "cab_temp",
+            "fault_sensor": "problem",
+            "voltage_sensor": "supply_voltage",
+            "case_temperature": "case_temp",
+            "exhaust_temperature": "outlet_temperature",
+        }[key],
+        device_id="source",
+        disabled_by=None,
     )
     reg.entities[old_name] = replacement
     hass = setup_hass()
+    hass.states.get = lambda name: (
+        entity("20", unit_of_measurement="°C")
+        if name == "sensor.new_room"
+        else entity("off", device_class="problem")
+        if key == "fault_sensor"
+        else entity("12", device_class="voltage", unit_of_measurement="V")
+        if key == "voltage_sensor"
+        else entity("20", unit_of_measurement="°C")
+    )
     monkeypatch.setattr(
         DieselLevelThermostatOptionsFlow,
         "config_entry",
@@ -187,9 +205,8 @@ async def test_changing_offset_does_not_rebind_unselected_missing_safety_sensor(
                 "room_temperature_offset": -1,
             }
         )
-    assert result["type"] == "form"
-    assert result["errors"]["fault_sensor"] == "invalid_sensor"
-    assert "fault_sensor" in {str(marker) for marker in result["data_schema"].schema}
+    assert result["type"] == "create_entry"
+    assert result["data"]["entity_registry_ids"]["fault_sensor"] == "deleted"
     assert config_entry.data["entity_registry_ids"]["fault_sensor"] == "deleted"
 
 
@@ -262,7 +279,14 @@ async def test_repair_schema_survives_invalid_offset_and_keeps_limits(monkeypatc
     config_entry.data.update(fault_sensor="binary_sensor.deleted", min_voltage=11.5)
     config_entry.data["entity_registry_ids"]["fault_sensor"] = "deleted"
     reg = registry()
-    reg.entities["binary_sensor.new"] = source_row(id="new-fault", entity_id="binary_sensor.new")
+    reg.entities["binary_sensor.new"] = source_row(
+        id="new-fault",
+        entity_id="binary_sensor.new",
+        domain="binary_sensor",
+        device_id="source",
+        unique_id="aa_problem",
+        disabled_by=None,
+    )
     monkeypatch.setattr(
         DieselLevelThermostatOptionsFlow,
         "config_entry",
@@ -270,6 +294,11 @@ async def test_repair_schema_survives_invalid_offset_and_keeps_limits(monkeypatc
     )
     flow = DieselLevelThermostatOptionsFlow()
     flow.hass = source_hass()
+    flow.hass.states.get = lambda name: (
+        entity("20", unit_of_measurement="°C")
+        if name == "sensor.new_room"
+        else entity("off", device_class="problem")
+    )
     selected = {
         "room_temperature": "sensor.new_room",
         "room_temperature_offset": 99,
@@ -279,7 +308,7 @@ async def test_repair_schema_survives_invalid_offset_and_keeps_limits(monkeypatc
         form = await flow.async_step_init(selected)
         assert form["errors"]["room_temperature_offset"] == "invalid_offset"
         marker = next(k for k in form["data_schema"].schema if str(k) == "fault_sensor")
-        assert marker.default() is None
+        assert marker.description["suggested_value"] == "binary_sensor.new"
         selected["room_temperature_offset"] = 0
         result = await flow.async_step_init(selected)
     assert result["data"]["entity_registry_ids"]["fault_sensor"] == "new-fault"
