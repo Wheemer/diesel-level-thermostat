@@ -25,6 +25,8 @@ from homeassistant.const import (
 )
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.device_registry import DeviceEntryType
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import (
     async_track_state_change_event,
@@ -51,6 +53,7 @@ from .const import (
     DEFAULT_MIN_LEVEL,
     DEFAULT_PROPORTIONAL_BAND,
     DEFAULT_ROOM_TEMPERATURE_OFFSET,
+    DOMAIN,
     LEVEL_MODE_VALUES,
     OPTIONAL_ENTITY_KEYS,
 )
@@ -89,7 +92,16 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         self.entry = entry
         self.config = {**entry.data, **entry.options}
         self._attr_unique_id = f"{entry.entry_id}_thermostat"
-        self._attr_name = entry.title
+        # Each configured thermostat owns a virtual service device. Keep its
+        # existing entity unique ID and name; do not attach it to the heater.
+        self._attr_name = None
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=entry.title,
+            manufacturer="Diesel Level Thermostat",
+            model="Level Thermostat",
+            entry_type=DeviceEntryType.SERVICE,
+        )
         self._attr_temperature_unit = hass.config.units.temperature_unit
         if self._attr_temperature_unit == UnitOfTemperature.FAHRENHEIT:
             self._attr_min_temp = 41
