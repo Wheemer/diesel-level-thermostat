@@ -348,6 +348,29 @@ async def test_pending_off_waits_for_burnoff_and_valid_public_control(source):
     assert h.hvac_mode == HVACMode.OFF
 
 
+async def test_late_start_waits_for_burnoff_before_shutdown(source):
+    h, services, _ = source
+    states = h.hass.states._states
+    h.hass.async_create_task = asyncio.create_task
+    await h._async_control()
+    await h.async_turn_off()
+    services.async_call.reset_mock()
+
+    states["binary_sensor.burnoff"] = entity("on")
+    states["switch.heater_power"] = entity("on")
+    h._async_source_changed(None)
+    await h._event_task
+    services.async_call.assert_not_awaited()
+    assert h.capability_attributes["shutdown_pending"]
+
+    states["binary_sensor.burnoff"] = entity("off")
+    h._async_source_changed(None)
+    await h._event_task
+    services.async_call.assert_awaited_once_with(
+        "switch", "turn_off", {"entity_id": "switch.heater_power"}, blocking=True
+    )
+
+
 async def test_removal_never_dispatches_deferred_off(source):
     h, services, _ = source
     h.hass.states._states["switch.heater_power"] = entity("on")

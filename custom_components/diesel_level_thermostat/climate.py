@@ -128,6 +128,8 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         self._event_task: asyncio.Task | None = None
         self._control_dirty = False
         self._power_on_pending = False
+        self._power_on_in_flight = False
+        self._start_recovery_reported = False
         self._selected_level_entity: str | None = None
         self._heating_cycle: bool | None = None
         self._shutdown_pending = False
@@ -266,6 +268,8 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             "source_room_temperature",
             "unavailable_reason",
             "shutdown_pending",
+            "shutdown_waiting_for_start",
+            "power_on_pending",
             "control_hvac_mode",
             "heating_cycle",
             "temperature_hysteresis_c",
@@ -315,6 +319,8 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             "unavailable_reason": self._source_unavailable_reason()
             or ("room_temperature_invalid" if self.current_temperature is None else None),
             "shutdown_pending": self._shutdown_pending,
+            "shutdown_waiting_for_start": self._shutdown_pending and self._power_on_pending,
+            "power_on_pending": self._power_on_pending,
             "shutdown_block_reason": self._shutdown_block_reason,
             "last_control_error": self._last_control_error,
             "control_active": self.available and self._hvac_mode == HVACMode.HEAT,
@@ -335,10 +341,11 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         """Restore user state and subscribe to selected source telemetry."""
         if old_state := await self.async_get_last_state():
             restored_mode = old_state.attributes.get("control_hvac_mode", old_state.state)
-            self._shutdown_pending = (
-                restored_mode == HVACMode.OFF
-                and old_state.attributes.get("shutdown_pending") is True
+            waiting_for_start = old_state.attributes.get("shutdown_waiting_for_start") is True
+            self._shutdown_pending = old_state.attributes.get("shutdown_pending") is True and (
+                restored_mode == HVACMode.OFF or waiting_for_start
             )
+            self._power_on_pending = self._shutdown_pending and waiting_for_start
             if restored_mode in (HVACMode.HEAT, HVACMode.OFF):
                 self._hvac_mode = HVACMode(restored_mode)
             cycle = old_state.attributes.get("heating_cycle")
@@ -425,12 +432,27 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         await super().async_will_remove_from_hass()
 
     @callback
-    def _async_source_changed(self, _event: Event) -> None:
+    def _async_source_changed(self, event: Event | None) -> None:
         """Coalesce state bursts without adding a timer or delaying control."""
         if self._removed:
             return
         if self._is_source_on():
             self._power_on_pending = False
+            self._start_recovery_reported = False
+        elif (
+            self._power_on_pending
+            and not self._power_on_in_flight
+            and self._hvac_mode == HVACMode.HEAT
+            and event is not None
+            and event.data.get("entity_id") == self.config[CONF_HEATER_POWER]
+            and (previous := event.data.get("old_state")) is not None
+            and previous.state in (STATE_UNAVAILABLE, STATE_UNKNOWN)
+            and (current := event.data.get("new_state")) is not None
+            and current.state == STATE_OFF
+        ):
+            # Allow a new request after the source recovers. Unrelated or
+            # repeated Off reports may still predate the previous start.
+            self._start_recovery_reported = True
         self.async_write_ha_state()
         self._control_dirty = True
         if self._event_task is None or self._event_task.done():
@@ -490,7 +512,7 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
                         + (self._shutdown_block_reason or "source unavailable")
                     )
         else:
-            await self._async_control()
+            await self._async_control(retry_start=True)
         if not self._removed:
             self.async_write_ha_state()
 
@@ -502,7 +524,7 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         """Disable virtual heating demand."""
         await self.async_set_hvac_mode(HVACMode.OFF)
 
-    async def _async_control(self) -> None:
+    async def _async_control(self, *, retry_start: bool = False) -> None:
         """Apply current demand; recheck it after every awaited level write."""
         task = asyncio.current_task()
         self._control_tasks.add(task)
@@ -569,13 +591,20 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
                     return
                 if self._is_source_on():
                     self._power_on_pending = False
-                elif not self._power_on_pending:
+                    self._start_recovery_reported = False
+                elif not self._power_on_pending or retry_start or self._start_recovery_reported:
+                    self._start_recovery_reported = False
                     self._power_on_pending = True
+                    self._power_on_in_flight = True
                     try:
                         await self._call_source("switch", "turn_on", self.config[CONF_HEATER_POWER])
                     except HomeAssistantError:
                         self._power_on_pending = False
                         raise
+                    finally:
+                        self._power_on_in_flight = False
+                    if self._is_source_on():
+                        self._power_on_pending = False
                     if self._removed:
                         return
                     if self._hvac_mode == HVACMode.OFF:
@@ -692,7 +721,8 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
 
     def _can_request_source_shutdown(self) -> bool:
         """Keep burn-off/cooldown ownership with the public source integration."""
-        if self._burnoff_blocked():
+        mode = self.hass.states.get(self.config[CONF_RUNNING_MODE])
+        if not mode or not self._is_level_mode(mode.state) or self._burnoff_blocked():
             return False
         level = self.hass.states.get(self._level_entity_id())
         return bool(level and level.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN))
@@ -702,11 +732,27 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         if self._removed:
             return False
         self._heating_cycle = False
-        if not (self._is_source_on() or self._power_on_pending):
-            power = self.hass.states.get(self.config[CONF_HEATER_POWER])
-            if power and power.state == STATE_OFF:
+        self._start_recovery_reported = False
+        mode = self.hass.states.get(self.config[CONF_RUNNING_MODE])
+        if (
+            mode
+            and mode.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
+            and not self._is_level_mode(mode.state)
+        ):
+            # Native heating or ventilation owns this controller now.
+            self._power_on_pending = False
+            self._shutdown_pending = False
+            self._shutdown_block_reason = None
+            return True
+        power = self.hass.states.get(self.config[CONF_HEATER_POWER])
+        if power and power.state == STATE_OFF:
+            if not self._power_on_pending:
                 self._shutdown_pending = False
                 self._shutdown_block_reason = None
+                return True
+            if self._shutdown_pending:
+                # Keep watching for a delayed ignition without repeating Off
+                # against the same reported Off state.
                 return True
         self._shutdown_pending = True
         if not self._can_request_source_shutdown():
@@ -721,17 +767,22 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
             _LOGGER.warning("Shutdown deferred (%s): source Power is unavailable", reason)
             return False
         self._shutdown_block_reason = None
+        if power.state == STATE_ON:
+            self._power_on_pending = False
         _LOGGER.info("Requesting source heater shutdown: %s", reason)
         try:
             await self._call_source("switch", "turn_off", self.config[CONF_HEATER_POWER])
         except HomeAssistantError:
             self._shutdown_block_reason = "source_shutdown_failed"
             raise
-        self._power_on_pending = False
-        # Service completion is not physical confirmation; retain pending
-        # until the source reports Off, without issuing timed retries.
+        # An Off state we already had before an unconfirmed start cannot
+        # confirm cancellation. Keep the intent until the late On is handled.
         reported_power = self.hass.states.get(self.config[CONF_HEATER_POWER])
-        self._shutdown_pending = not reported_power or reported_power.state != STATE_OFF
+        if reported_power and reported_power.state == STATE_ON:
+            self._power_on_pending = False
+        self._shutdown_pending = (
+            self._power_on_pending or not reported_power or reported_power.state != STATE_OFF
+        )
         return True
 
     async def _call_source(self, domain: str, service: str, entity_id: str, **data: Any) -> None:

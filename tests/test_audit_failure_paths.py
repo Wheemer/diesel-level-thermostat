@@ -1,6 +1,7 @@
 """Regression coverage for independently reproduced command/lifecycle failures."""
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -183,8 +184,6 @@ async def test_pending_off_survives_restore_while_source_is_unavailable():
         await h.async_turn_off()
     h.entity_id = "climate.test"
     saved = h._async_calculate_state()
-    from types import SimpleNamespace
-
     restored, services = controller()
     restored._hvac_mode = HVACMode.OFF
     restored.hass.states._states["switch.heater_power"] = entity("on")
@@ -288,3 +287,114 @@ async def test_invalid_target_in_unavailable_snapshot_never_restores_heat():
         await h.async_added_to_hass()
     assert h.hvac_mode == HVACMode.OFF
     services.async_call.assert_not_awaited()
+
+
+async def test_unconfirmed_start_is_eligible_after_source_power_recovers():
+    thermostat, services = controller()
+    thermostat.hass.async_create_task = asyncio.create_task
+    states = thermostat.hass.states._states
+    power = "switch.heater_power"
+
+    async def update_power(value):
+        old = states[power]
+        states[power] = entity(value)
+        thermostat._async_source_changed(
+            SimpleNamespace(
+                data={
+                    "entity_id": power,
+                    "old_state": old,
+                    "new_state": states[power],
+                }
+            )
+        )
+        await thermostat._event_task
+
+    await thermostat._async_control()
+    await update_power("off")  # A repeated Off report is not confirmation of failure.
+    assert sum(call.args[1] == "turn_on" for call in services.async_call.await_args_list) == 1
+    await update_power("unavailable")
+    await update_power("off")
+    assert sum(call.args[1] == "turn_on" for call in services.async_call.await_args_list) == 2
+
+
+async def test_explicit_heat_can_retry_unconfirmed_start():
+    thermostat, services = controller()
+    await thermostat._async_control()
+    await thermostat.async_turn_on()
+    assert sum(call.args[1] == "turn_on" for call in services.async_call.await_args_list) == 2
+
+
+async def test_delayed_start_is_shut_down_after_virtual_off():
+    thermostat, services = controller()
+    thermostat.hass.async_create_task = asyncio.create_task
+    states = thermostat.hass.states._states
+    await thermostat._async_control()
+    await thermostat.async_turn_off()
+    assert thermostat.capability_attributes["shutdown_waiting_for_start"]
+
+    services.async_call.reset_mock()
+    thermostat._async_source_changed(None)
+    await thermostat._event_task
+    services.async_call.assert_not_awaited()
+
+    states["switch.heater_power"] = entity("on")
+    thermostat._async_source_changed(None)
+    await thermostat._event_task
+    assert services.async_call.await_args.args[:2] == ("switch", "turn_off")
+    assert thermostat._shutdown_pending
+
+    states["switch.heater_power"] = entity("off")
+    thermostat._async_source_changed(None)
+    await thermostat._event_task
+    assert not thermostat._shutdown_pending
+    assert services.async_call.await_count == 1
+
+
+@pytest.mark.parametrize("pending", [False, True])
+@pytest.mark.parametrize("native_mode", ["Ventilation", "Temperature"])
+async def test_virtual_off_relinquishes_native_mode_with_available_level_number(
+    pending, native_mode
+):
+    thermostat, services = controller(mode=native_mode)
+    thermostat.config["heater_level"] = "number.level"
+    thermostat.hass.states._states.update(
+        {
+            "number.level": entity("2", min=1, max=10, step=1),
+            "switch.heater_power": entity("on"),
+        }
+    )
+    if pending:
+        thermostat._hvac_mode = HVACMode.OFF
+        thermostat._shutdown_pending = True
+        await thermostat._async_control()
+    else:
+        await thermostat.async_turn_off()
+    services.async_call.assert_not_awaited()
+    assert thermostat.hvac_mode == HVACMode.OFF
+    assert not thermostat._shutdown_pending
+
+
+async def test_shutdown_waiting_for_delayed_start_survives_restore():
+    thermostat, _ = controller()
+    await thermostat._async_control()
+    await thermostat.async_turn_off()
+    thermostat.entity_id = "climate.test"
+    saved = thermostat._async_calculate_state()
+
+    restored, services = controller()
+    restored.async_get_last_state = AsyncMock(
+        return_value=SimpleNamespace(state=saved.state, attributes=saved.attributes)
+    )
+    restored.async_on_remove = MagicMock()
+    with (
+        patch(
+            "custom_components.diesel_level_thermostat.climate.source_device_id", return_value=None
+        ),
+        patch("custom_components.diesel_level_thermostat.climate.async_track_state_change_event"),
+    ):
+        await restored.async_added_to_hass()
+    assert restored._shutdown_pending
+    services.async_call.assert_not_awaited()
+    restored.hass.states._states["switch.heater_power"] = entity("on")
+    await restored._async_control()
+    assert services.async_call.await_args.args[:2] == ("switch", "turn_off")

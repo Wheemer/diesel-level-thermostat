@@ -243,8 +243,8 @@ async def test_reported_fahrenheit_overshoot_requests_shutdown() -> None:
 
 @pytest.mark.asyncio
 async def test_virtual_off_uses_normal_power_command() -> None:
-    """Turning the virtual climate off requests the source's normal shutdown."""
-    thermostat, services = controller(mode="Temperature Mode")
+    """Turning the virtual climate off in Level Mode requests normal shutdown."""
+    thermostat, services = controller()
     thermostat.hass.states._states["switch.heater_power"] = entity(STATE_ON)
     await thermostat.async_turn_off()
     services.async_call.assert_awaited_once_with(
