@@ -732,7 +732,10 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         if self._removed:
             return False
         self._heating_cycle = False
-        self._start_recovery_reported = False
+        # A temporary source lock can block a queued retry without canceling
+        # Heat. Preserve the recovery signal until demand can be rechecked.
+        if self._hvac_mode == HVACMode.OFF:
+            self._start_recovery_reported = False
         mode = self.hass.states.get(self.config[CONF_RUNNING_MODE])
         if (
             mode
@@ -741,6 +744,7 @@ class DieselLevelThermostat(ClimateEntity, RestoreEntity):
         ):
             # Native heating or ventilation owns this controller now.
             self._power_on_pending = False
+            self._start_recovery_reported = False
             self._shutdown_pending = False
             self._shutdown_block_reason = None
             return True

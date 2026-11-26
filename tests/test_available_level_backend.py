@@ -348,6 +348,36 @@ async def test_pending_off_waits_for_burnoff_and_valid_public_control(source):
     assert h.hvac_mode == HVACMode.OFF
 
 
+async def test_start_retry_waits_for_burnoff_after_power_recovers(source):
+    h, services, _ = source
+    states = h.hass.states._states
+    h.hass.async_create_task = asyncio.create_task
+    await h._async_control()
+    services.async_call.reset_mock()
+
+    power = "switch.heater_power"
+    unavailable = states[power] = entity("unavailable")
+    h._async_source_changed(None)
+    await h._event_task
+    states["binary_sensor.burnoff"] = entity("on")
+    states[power] = entity("off")
+    h._async_source_changed(
+        SimpleNamespace(
+            data={"entity_id": power, "old_state": unavailable, "new_state": states[power]}
+        )
+    )
+    await h._event_task
+    services.async_call.assert_not_awaited()
+
+    states["binary_sensor.burnoff"] = entity("off")
+    h._async_source_changed(None)
+    await h._event_task
+    assert [c.args[:2] for c in services.async_call.await_args_list] == [
+        ("number", "set_value"),
+        ("switch", "turn_on"),
+    ]
+
+
 async def test_late_start_waits_for_burnoff_before_shutdown(source):
     h, services, _ = source
     states = h.hass.states._states
